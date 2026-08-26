@@ -13,11 +13,14 @@
     "ebay:auth": "tsx scripts/ebay-auth.mts",
     "ebay:categories": "tsx scripts/ebay-categories.mts",
     "ebay:locations": "tsx scripts/ebay-locations.mts",
-    "ebay:create-location": "tsx scripts/ebay-create-location.mts"
+    "ebay:create-location": "tsx scripts/ebay-create-location.mts",
+    "ebay:import": "tsx scripts/ebay-import.mts",
+    "health:backfill": "tsx --conditions=react-server scripts/health-backfill.mts"
   },
   "dependencies": {
     "@supabase/ssr": "^0.12.5",
     "@supabase/supabase-js": "^2.112.4",
+    "fast-xml-parser": "^5.11.0",
     "next": "14.2.35",
     "react": "^18",
     "react-dom": "^18",

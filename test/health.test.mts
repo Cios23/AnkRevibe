@@ -16,8 +16,10 @@ describe('hash fixtures', () => {
     assert.equal(hammingDistance(SOLD_HASH, SOLD_HASH), 0)
     assert.equal(hammingDistance(SOLD_HASH, RECOMPRESSED), 8)
     assert.equal(hammingDistance(SOLD_HASH, DIFFERENT), 56)
-    assert.ok(8 <= PHASH_MATCH_THRESHOLD, 'recompressed must be inside threshold')
     assert.ok(56 > PHASH_MATCH_THRESHOLD, 'different must be outside threshold')
+    // The production default is deliberately tight (see lib/phash.ts):
+    // at 3k photos a looser threshold flags noise.
+    assert.ok(PHASH_MATCH_THRESHOLD <= 8, 'default must stay inside the noise floor')
   })
 })
 
@@ -31,11 +33,23 @@ describe('findPhashMatches', () => {
     assert.deepEqual(matches, [{ inventoryId: 'dupe', distance: 0 }])
   })
 
-  test('flags a re-compressed copy inside the threshold', () => {
+  test('flags a re-compressed copy when the threshold allows it', () => {
+    // Distance 8 is heavy re-compression. It is outside the production
+    // default, so this pins the tolerance explicitly rather than relying
+    // on whatever the default happens to be.
+    const matches = findPhashMatches(
+      sold,
+      [{ phash: RECOMPRESSED, inventory_id: 'dupe' }],
+      8,
+    )
+    assert.deepEqual(matches, [{ inventoryId: 'dupe', distance: 8 }])
+  })
+
+  test('a distance-8 match is NOT flagged at the production default', () => {
     const matches = findPhashMatches(sold, [
       { phash: RECOMPRESSED, inventory_id: 'dupe' },
     ])
-    assert.deepEqual(matches, [{ inventoryId: 'dupe', distance: 8 }])
+    assert.deepEqual(matches, [], 'default threshold must reject the noise floor')
   })
 
   test('does not flag an unrelated photo', () => {
@@ -68,10 +82,14 @@ describe('findPhashMatches', () => {
   test('keeps the CLOSEST photo pair per candidate item', () => {
     // The same item has one unrelated photo and one near-identical photo.
     // The near one must win, or a real duplicate hides behind a bad angle.
-    const matches = findPhashMatches(sold, [
-      { phash: DIFFERENT, inventory_id: 'dupe' },
-      { phash: RECOMPRESSED, inventory_id: 'dupe' },
-    ])
+    const matches = findPhashMatches(
+      sold,
+      [
+        { phash: DIFFERENT, inventory_id: 'dupe' },
+        { phash: RECOMPRESSED, inventory_id: 'dupe' },
+      ],
+      8,
+    )
     assert.deepEqual(matches, [{ inventoryId: 'dupe', distance: 8 }])
   })
 
@@ -79,6 +97,7 @@ describe('findPhashMatches', () => {
     const matches = findPhashMatches(
       [{ phash: DIFFERENT }, { phash: SOLD_HASH }],
       [{ phash: RECOMPRESSED, inventory_id: 'dupe' }],
+      8,
     )
     assert.deepEqual(matches, [{ inventoryId: 'dupe', distance: 8 }])
   })
@@ -96,10 +115,14 @@ describe('findPhashMatches', () => {
   })
 
   test('returns multiple matches closest-first', () => {
-    const matches = findPhashMatches(sold, [
-      { phash: RECOMPRESSED, inventory_id: 'far' },
-      { phash: SOLD_HASH, inventory_id: 'near' },
-    ])
+    const matches = findPhashMatches(
+      sold,
+      [
+        { phash: RECOMPRESSED, inventory_id: 'far' },
+        { phash: SOLD_HASH, inventory_id: 'near' },
+      ],
+      8,
+    )
     assert.deepEqual(matches, [
       { inventoryId: 'near', distance: 0 },
       { inventoryId: 'far', distance: 8 },
@@ -126,7 +149,7 @@ function seedDb(overrides: Record<string, any[]> = {}) {
     ],
     listing_photos: [
       { id: 'p1', inventory_id: 'sold-item', url: 'u1', phash: SOLD_HASH },
-      { id: 'p2', inventory_id: 'dupe-item', url: 'u2', phash: RECOMPRESSED },
+      { id: 'p2', inventory_id: 'dupe-item', url: 'u2', phash: SOLD_HASH },
       { id: 'p3', inventory_id: 'other-item', url: 'u3', phash: DIFFERENT },
     ],
     platform_listings: [
@@ -153,14 +176,14 @@ describe('runHealthCheck', () => {
     assert.equal(result.flagsCreated, 1)
     assert.equal(result.candidatesCompared, 2)
     assert.deepEqual(result.flags, [
-      { flaggedInventoryId: 'dupe-item', similarityScore: 8 },
+      { flaggedInventoryId: 'dupe-item', similarityScore: 0 },
     ])
 
     const flags = db.table('inventory_health_flags')
     assert.equal(flags.length, 1)
     assert.equal(flags[0].flagged_inventory_id, 'dupe-item')
     assert.equal(flags[0].sold_inventory_id, 'sold-item')
-    assert.equal(flags[0].similarity_score, 8)
+    assert.equal(flags[0].similarity_score, 0)
     assert.equal(flags[0].status, 'open')
   })
 
@@ -244,7 +267,7 @@ describe('runHealthCheck', () => {
     const db = seedDb({
       listing_photos: [
         { id: 'p1', inventory_id: 'sold-item', url: 'u1', phash: null },
-        { id: 'p2', inventory_id: 'dupe-item', url: 'u2', phash: RECOMPRESSED },
+        { id: 'p2', inventory_id: 'dupe-item', url: 'u2', phash: SOLD_HASH },
       ],
       platform_listings: [
         { id: 'l1', inventory_id: 'dupe-item', platform: 'ebay', status: 'active' },
@@ -278,7 +301,7 @@ describe('runHealthCheck', () => {
     const db = seedDb({
       listing_photos: [
         { id: 'p1', inventory_id: 'sold-item', url: 'broken', phash: null },
-        { id: 'p2', inventory_id: 'dupe-item', url: 'u2', phash: RECOMPRESSED },
+        { id: 'p2', inventory_id: 'dupe-item', url: 'u2', phash: SOLD_HASH },
       ],
       platform_listings: [
         { id: 'l1', inventory_id: 'dupe-item', platform: 'ebay', status: 'active' },
@@ -297,7 +320,7 @@ describe('runHealthCheck', () => {
   test('returns empty when the sold item has no photos', async () => {
     const db = seedDb({
       listing_photos: [
-        { id: 'p2', inventory_id: 'dupe-item', url: 'u2', phash: RECOMPRESSED },
+        { id: 'p2', inventory_id: 'dupe-item', url: 'u2', phash: SOLD_HASH },
       ],
     })
     const result = await runHealthCheck('sold-item', {

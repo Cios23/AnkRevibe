@@ -117,6 +117,10 @@ export async function ebayFetch<T = unknown>(
         Authorization: `Bearer ${token}`,
         Accept: 'application/json',
         'Content-Type': 'application/json',
+        // The Inventory API rejects GETs without this - error 25709
+        // "Invalid value for header Accept-Language". Mocked tests cannot
+        // catch it, so it only shows up against the live API.
+        'Accept-Language': 'en-US',
         'X-EBAY-C-MARKETPLACE-ID': marketplaceId(),
         ...headers,
       },

@@ -16,10 +16,28 @@ const HASH_HEIGHT = 8
 
 /**
  * Hamming distance at or below this counts as "probably the same physical
- * item". 0-4 is effectively identical, 5-10 survives re-compression and
- * crop, >12 is a different photo. Tune against real data.
+ * item".
+ *
+ * Tuned against the real catalogue (3,086 photos, 402 listings) rather than
+ * guessed. Measured false-positive rate over 241,981 unrelated cross-item
+ * pairs:
+ *
+ *   <=4   0.0008%      <=8   0.037%
+ *   <=6   0.0058%      <=10  0.144%
+ *
+ * One sold item with 7 photos makes ~21,600 comparisons against that
+ * catalogue, so a threshold of 10 produces roughly 30 chance collisions per
+ * scan - which is exactly what the first backfill found (two nonsense
+ * matches at distance 10, a doll lot against a shirt and a jacket).
+ *
+ * 6 keeps the expected false positives near 1 per scan while still
+ * comfortably catching the real case: the same photo file re-hosted by
+ * another marketplace, which lands at 0-4. Raise it only with evidence,
+ * and re-measure if the catalogue grows by an order of magnitude.
  */
-export const PHASH_MATCH_THRESHOLD = 10
+export const PHASH_MATCH_THRESHOLD = Number(
+  process.env.PHASH_MATCH_THRESHOLD ?? 6,
+)
 
 export async function computePhash(image: Buffer): Promise<string> {
   const raw = await sharp(image)

@@ -23,7 +23,14 @@ const { EbayAdapter, buildAspects, buildDescription, skuFor } = await import(
 
 // --------------------------------------------------------------- test rig
 
-type Route = { method: string; match: RegExp; status?: number; body?: unknown }
+type Route = {
+  method: string
+  match: RegExp
+  status?: number
+  body?: unknown
+  /** Raw body, for the XML Trading API. */
+  raw?: string
+}
 
 function mockFetch(routes: Route[]) {
   const calls: Array<{ method: string; url: string; body: any; headers: any }> = []
@@ -33,7 +40,15 @@ function mockFetch(routes: Route[]) {
     calls.push({
       method,
       url: String(url),
-      body: init.body ? JSON.parse(init.body) : undefined,
+      // Trading API bodies are XML, so this must not assume JSON.
+      body: (() => {
+        if (!init.body) return undefined
+        try {
+          return JSON.parse(init.body)
+        } catch {
+          return init.body
+        }
+      })(),
       headers: init.headers ?? {},
     })
 
@@ -48,6 +63,7 @@ function mockFetch(routes: Route[]) {
     }
     const status = route.status ?? 200
     if (status === 204) return new Response(null, { status })
+    if (route.raw !== undefined) return new Response(route.raw, { status })
     return new Response(JSON.stringify(route.body ?? {}), { status })
   }) as unknown as typeof fetch
 
@@ -430,23 +446,43 @@ describe('EbayAdapter.delist', () => {
     assert.match(calls[0].url, /withdraw/)
   })
 
-  test('a 404 is success - the listing is already down', async () => {
-    const { impl } = mockFetch([
-      { method: 'POST', match: /withdraw/, status: 404, body: { errors: [{ errorId: 25001 }] } },
-    ])
-    await new EbayAdapter(baseOptions(impl)).delist('offer-1')
-  })
-
-  test('“offer not published” (25002) is also success', async () => {
+  test('“offer not published” (25002) is success - already down', async () => {
     const { impl } = mockFetch([
       { method: 'POST', match: /withdraw/, status: 400, body: { errors: [{ errorId: 25002 }] } },
     ])
     await new EbayAdapter(baseOptions(impl)).delist('offer-1')
   })
 
-  test('any other error still propagates', async () => {
+  test('no such offer falls back to EndItem for an IMPORTED listing', async () => {
+    // Listings imported from the account are legacy ItemIDs with no offer
+    // behind them. Treating the 404 as success would leave them live.
+    const { impl, calls } = mockFetch([
+      { method: 'POST', match: /withdraw/, status: 404, body: { errors: [{ errorId: 25713 }] } },
+      { method: 'POST', match: /ws\/api\.dll/, raw: '<?xml version="1.0"?><EndItemResponse xmlns="urn:ebay:apis:eBLBaseComponents"><Ack>Success</Ack></EndItemResponse>' },
+    ])
+
+    await new EbayAdapter(baseOptions(impl)).delist('286152947731')
+
+    const ended = calls.find((c) => /ws\/api\.dll/.test(c.url))
+    assert.ok(ended, 'must call the Trading API to end the legacy listing')
+    assert.match(String(ended!.headers['X-EBAY-API-CALL-NAME']), /EndItem/)
+  })
+
+  test('an already-ended legacy listing (1047) is success', async () => {
     const { impl } = mockFetch([
-      { method: 'POST', match: /withdraw/, status: 400, body: { errors: [{ errorId: 25713, longMessage: 'nope' }] } },
+      { method: 'POST', match: /withdraw/, status: 404, body: { errors: [{ errorId: 25713 }] } },
+      {
+        method: 'POST',
+        match: /ws\/api\.dll/,
+        raw: '<?xml version="1.0"?><EndItemResponse xmlns="urn:ebay:apis:eBLBaseComponents"><Ack>Failure</Ack><Errors><ErrorCode>1047</ErrorCode><LongMessage>Auction already closed.</LongMessage><SeverityCode>Error</SeverityCode></Errors></EndItemResponse>',
+      },
+    ])
+    await new EbayAdapter(baseOptions(impl)).delist('286152947731')
+  })
+
+  test('any other withdraw error still propagates', async () => {
+    const { impl } = mockFetch([
+      { method: 'POST', match: /withdraw/, status: 400, body: { errors: [{ errorId: 25604, longMessage: 'nope' }] } },
     ])
     await assert.rejects(
       () => new EbayAdapter(baseOptions(impl)).delist('offer-1'),

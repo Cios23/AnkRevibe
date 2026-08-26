@@ -6,6 +6,9 @@ import { createAdminClient } from '@/lib/supabase/admin'
 import { hammingDistance, hashImageUrl, PHASH_MATCH_THRESHOLD } from '@/lib/phash'
 import type { Database, ListingPhoto } from '@/lib/types'
 
+/** How many inventory ids to put in one `in.(...)` filter. */
+const CANDIDATE_CHUNK = 100
+
 export type HealthCheckResult = {
   soldInventoryId: string
   photosHashed: number
@@ -140,17 +143,21 @@ export async function runHealthCheck(
     }
   }
 
-  const { data: candidatePhotosRaw, error: candidateError } = await supabase
-    .from('listing_photos')
-    .select('*')
-    .in('inventory_id', candidateIds)
-  if (candidateError) throw new Error(candidateError.message)
+  // PostgREST puts `in.(...)` in the query string, so a few hundred uuids
+  // overflow the URL length limit and the request fails before it is sent
+  // ("TypeError: fetch failed"). Chunk it.
+  const candidatePhotosRaw: ListingPhoto[] = []
+  for (let i = 0; i < candidateIds.length; i += CANDIDATE_CHUNK) {
+    const chunk = candidateIds.slice(i, i + CANDIDATE_CHUNK)
+    const { data, error: candidateError } = await supabase
+      .from('listing_photos')
+      .select('*')
+      .in('inventory_id', chunk)
+    if (candidateError) throw new Error(candidateError.message)
+    candidatePhotosRaw.push(...((data ?? []) as ListingPhoto[]))
+  }
 
-  const candidates = await ensureHashes(
-    supabase,
-    candidatePhotosRaw ?? [],
-    hashUrl,
-  )
+  const candidates = await ensureHashes(supabase, candidatePhotosRaw, hashUrl)
 
   const matches = findPhashMatches(sold.photos, candidates.photos, threshold)
 

@@ -12,6 +12,7 @@ import type {
   ListingContext,
   PlatformAdapter,
 } from '@/lib/platforms/adapter'
+import { endItem, TradingApiError } from '@/lib/ebay/trading'
 import type { Inventory, Platform } from '@/lib/types'
 
 /**
@@ -235,11 +236,41 @@ export class EbayAdapter implements PlatformAdapter {
         `/sell/inventory/v1/offer/${platformListingId}/withdraw`,
         this.opts({ method: 'POST' }),
       )
+      return
     } catch (cause) {
       if (cause instanceof EbayApiError) {
-        if (cause.isNotFound) return
-        // 25002: offer not published / already ended.
+        // 25002: offer exists but is not published - already down.
         if (cause.errors.some((e) => e.errorId === 25002)) return
+
+        // No such offer. This is the normal case for a listing IMPORTED
+        // from the account rather than published by us: it is a legacy
+        // listing identified by ItemID, with no offer behind it. Returning
+        // here would silently leave it live, so fall through to EndItem.
+        if (cause.isNotFound || cause.errors.some((e) => e.errorId === 25713)) {
+          await this.endLegacyListing(platformListingId)
+          return
+        }
+      }
+      throw cause
+    }
+  }
+
+  /** Ends a legacy (UI- or import-originated) listing via the Trading API. */
+  private async endLegacyListing(itemId: string): Promise<void> {
+    try {
+      // Pass the injected transport through so tests never reach eBay.
+      await endItem(itemId, 'NotAvailable', {
+        fetchImpl: this.fetchOptions.fetchImpl,
+        getToken: this.fetchOptions.getToken,
+        sleep: this.fetchOptions.sleep,
+      })
+    } catch (cause) {
+      if (cause instanceof TradingApiError) {
+        // 1047 / 1048: auction already ended or item not found - the
+        // desired end state already holds.
+        if (cause.errors.some((e) => e.code === '1047' || e.code === '1048')) {
+          return
+        }
       }
       throw cause
     }
