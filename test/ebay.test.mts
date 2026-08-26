@@ -21,6 +21,7 @@ const { clearConditionPolicyCache } = await import('../lib/ebay/conditions')
 const { EbayAdapter, buildAspects, buildDescription, skuFor } = await import(
   '../lib/platforms/ebay'
 )
+const { isLegacyItemId, mergeAspects } = await import('../lib/ebay/enrich')
 
 // --------------------------------------------------------------- test rig
 
@@ -575,5 +576,136 @@ describe('EbayAdapter.relist', () => {
 
     assert.equal(result.platformListingId, 'offer-7')
     assert.equal(result.platformUrl, 'https://www.ebay.com/itm/555')
+  })
+})
+
+
+// ------------------------------------------------------- specifics recovery
+
+describe('legacy listing enrichment', () => {
+  test('recognises a legacy ItemID but not an offer id', () => {
+    assert.equal(isLegacyItemId('406836073499'), true)
+    assert.equal(isLegacyItemId('246534821011'), true) // both are numeric
+    assert.equal(isLegacyItemId('ankrevibe-abc'), false)
+    assert.equal(isLegacyItemId(null), false)
+    assert.equal(isLegacyItemId('12345'), false) // too short
+  })
+
+  test('eBay values win over ours, matched case-insensitively', () => {
+    const merged = mergeAspects(
+      { Brand: ['Unbranded'], Size: ['L'] },
+      { brand: ['HP'], Type: ['Ink Cartridge'] },
+    )
+    // Our guessed Brand is replaced, under eBay's own spelling.
+    assert.equal(merged.Brand, undefined)
+    assert.deepEqual(merged.brand, ['HP'])
+    assert.deepEqual(merged.Type, ['Ink Cartridge'])
+    // Ours survives where eBay had nothing.
+    assert.deepEqual(merged.Size, ['L'])
+  })
+
+  test('caps at eBay 30-aspect limit', () => {
+    const many: Record<string, string[]> = {}
+    for (let i = 0; i < 50; i++) many['Aspect' + i] = ['v']
+    assert.equal(Object.keys(mergeAspects({}, many)).length, 30)
+  })
+
+  test('names differing only by digit stay distinct', () => {
+    const merged = mergeAspects({}, { 'Set Includes 2': ['a'], 'Set Includes 3': ['b'] })
+    assert.equal(Object.keys(merged).length, 2)
+  })
+})
+
+describe('EbayAdapter with an imported listing', () => {
+  beforeEach(() => clearConditionPolicyCache())
+
+  const TRADING_GETITEM: Route = {
+    method: 'POST',
+    match: /ws\/api\.dll/,
+    raw: `<?xml version="1.0"?><GetItemResponse xmlns="urn:ebay:apis:eBLBaseComponents">
+  <Ack>Success</Ack>
+  <Item>
+    <ItemID>406836073499</ItemID>
+    <Title>HP 60 Tri-Color Ink</Title>
+    <PrimaryCategory><CategoryID>16191</CategoryID><CategoryName>Ink Cartridges</CategoryName></PrimaryCategory>
+    <ItemSpecifics>
+      <NameValueList><Name>Type</Name><Value>Ink Cartridge</Value></NameValueList>
+      <NameValueList><Name>Brand</Name><Value>HP</Value></NameValueList>
+      <NameValueList><Name>Color</Name><Value>Tri-Color</Value></NameValueList>
+    </ItemSpecifics>
+  </Item>
+</GetItemResponse>`,
+  }
+
+  test('uses eBay’s own category and specifics, skipping the taxonomy guess', async () => {
+    const { impl, calls } = mockFetch([
+      TRADING_GETITEM,
+      CONDITION_ROUTE,
+      { method: 'PUT', match: /inventory_item/, status: 204 },
+      { method: 'GET', match: /\/offer\?sku=/, body: { offers: [] } },
+      { method: 'POST', match: /\/offer$/, body: { offerId: 'offer-1' } },
+      { method: 'POST', match: /publish/, body: { listingId: '999' } },
+    ])
+
+    await new EbayAdapter(baseOptions(impl)).createListing({
+      item: { ...ITEM, category: 'unmapped', subcategory: null },
+      photos: PHOTOS,
+      price: 9.99,
+      existingPlatformListingId: '406836073499',
+    })
+
+    const put = calls.find((c) => c.method === 'PUT')!
+    // The Type specific that made the first bulk publish fail with 25002.
+    assert.deepEqual(put.body.product.aspects.Type, ['Ink Cartridge'])
+
+    const offer = calls.find((c) => c.method === 'POST' && /\/offer$/.test(c.url))!
+    assert.equal(offer.body.categoryId, '16191', 'must use eBay’s category id')
+
+    assert.ok(
+      !calls.some((c) => /get_category_suggestions/.test(c.url)),
+      'must not re-guess a category eBay already knows',
+    )
+  })
+
+  test('falls back to the taxonomy guess when there is no legacy id', async () => {
+    const { impl, calls } = mockFetch([
+      CONDITION_ROUTE,
+      { method: 'PUT', match: /inventory_item/, status: 204 },
+      { method: 'GET', match: /\/offer\?sku=/, body: { offers: [] } },
+      { method: 'POST', match: /\/offer$/, body: { offerId: 'offer-1' } },
+      { method: 'POST', match: /publish/, body: { listingId: '999' } },
+    ])
+
+    await new EbayAdapter(baseOptions(impl)).createListing({
+      item: ITEM,
+      photos: PHOTOS,
+      price: 78,
+      existingPlatformListingId: null,
+    })
+
+    const offer = calls.find((c) => c.method === 'POST' && /\/offer$/.test(c.url))!
+    assert.equal(offer.body.categoryId, STATIC_CATEGORY_MAP['outerwear/mens'])
+  })
+
+  test('a GetItem failure degrades to inference instead of failing', async () => {
+    const { impl, calls } = mockFetch([
+      { method: 'POST', match: /ws\/api\.dll/, status: 500 },
+      CONDITION_ROUTE,
+      { method: 'PUT', match: /inventory_item/, status: 204 },
+      { method: 'GET', match: /\/offer\?sku=/, body: { offers: [] } },
+      { method: 'POST', match: /\/offer$/, body: { offerId: 'offer-1' } },
+      { method: 'POST', match: /publish/, body: { listingId: '999' } },
+    ])
+
+    const result = await new EbayAdapter(baseOptions(impl)).createListing({
+      item: ITEM,
+      photos: PHOTOS,
+      price: 78,
+      existingPlatformListingId: '406836073499',
+    })
+
+    assert.equal(result.platformListingId, 'offer-1')
+    const offer = calls.find((c) => c.method === 'POST' && /\/offer$/.test(c.url))!
+    assert.equal(offer.body.categoryId, STATIC_CATEGORY_MAP['outerwear/mens'])
   })
 })

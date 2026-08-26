@@ -54,8 +54,27 @@ function contextFor(
   item: Inventory,
   photos: ListingPhoto[],
   platform: Platform,
+  existingPlatformListingId?: string | null,
 ): ListingContext {
-  return { item, photos, price: priceFor(item, platform) }
+  return {
+    item,
+    photos,
+    price: priceFor(item, platform),
+    existingPlatformListingId: existingPlatformListingId ?? null,
+  }
+}
+
+/** Existing per-platform handles, so adapters can recognise a known listing. */
+async function loadExistingListingIds(
+  supabase: Client,
+  inventoryId: string,
+): Promise<Map<string, string | null>> {
+  const { data, error } = await supabase
+    .from('platform_listings')
+    .select('platform, platform_listing_id')
+    .eq('inventory_id', inventoryId)
+  if (error) throw new Error(error.message)
+  return new Map((data ?? []).map((r) => [r.platform, r.platform_listing_id]))
 }
 
 export type CrosspostResult = {
@@ -79,13 +98,14 @@ export async function crosspost(
   const getAdapter = deps.getAdapter ?? defaultGetAdapter
   const item = await loadItem(supabase, inventoryId)
   const photos = await loadPhotos(supabase, inventoryId)
+  const existing = await loadExistingListingIds(supabase, inventoryId)
   const results: CrosspostResult[] = []
 
   for (const platform of platforms) {
     const price = priceFor(item, platform)
     try {
       const listing = await getAdapter(platform).createListing(
-        contextFor(item, photos, platform),
+        contextFor(item, photos, platform, existing.get(platform)),
       )
 
       const { error } = await supabase.from('platform_listings').upsert(
@@ -261,7 +281,7 @@ export async function relist(
     try {
       const created = await getAdapter(platform).relist(
         listing.platform_listing_id,
-        contextFor(item, photos, platform),
+        contextFor(item, photos, platform, listing.platform_listing_id),
       )
       const { error: updateError } = await supabase
         .from('platform_listings')

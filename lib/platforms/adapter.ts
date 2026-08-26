@@ -21,6 +21,14 @@ export type ListingContext = {
   item: Inventory
   photos: Pick<ListingPhoto, 'url' | 'position'>[]
   price: number | null
+  /**
+   * The platform's existing handle for this item, if we already have one.
+   *
+   * For eBay this is how an imported listing is recognised: a legacy numeric
+   * ItemID means the item is already listed and eBay holds its true category
+   * and full item specifics, which are better than anything we can infer.
+   */
+  existingPlatformListingId?: string | null
 }
 
 /**

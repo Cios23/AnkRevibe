@@ -16,6 +16,11 @@ import type {
   PlatformAdapter,
 } from '@/lib/platforms/adapter'
 import { endItem, TradingApiError } from '@/lib/ebay/trading'
+import {
+  getLegacyListingDetail,
+  isLegacyItemId,
+  mergeAspects,
+} from '@/lib/ebay/enrich'
 import type { Inventory, Platform } from '@/lib/types'
 
 /**
@@ -120,25 +125,56 @@ export class EbayAdapter implements PlatformAdapter {
       throw new Error(`Cannot list ${item.id} on eBay: at least one photo is required.`)
     }
 
-    // Category first: the valid condition set depends on it, and sending a
-    // condition the category rejects fails at publish - after the inventory
+    // If eBay already carries this item, take its category and specifics
+    // rather than inferring them. Categories require specifics we do not
+    // model, and a wrong one only surfaces at publish - after the inventory
     // item and offer already exist.
-    const category = await resolveCategoryId(item, this.opts())
+    let categoryId: string | null = null
+    let recoveredAspects: Record<string, string[]> = {}
+
+    if (isLegacyItemId(context.existingPlatformListingId)) {
+      try {
+        const legacy = await getLegacyListingDetail(
+          context.existingPlatformListingId!,
+          this.tradingOptions(),
+        )
+        categoryId = legacy.categoryId
+        recoveredAspects = legacy.aspects
+      } catch {
+        // Fall through to inference - a listing may have been ended since.
+      }
+    }
+
+    // Category also decides the valid condition set, so it must be settled
+    // before the inventory item is written.
+    if (!categoryId) {
+      categoryId = (await resolveCategoryId(item, this.opts())).categoryId
+    }
 
     const sku = skuFor(item)
-    await this.putInventoryItem(sku, context, category.categoryId)
+    await this.putInventoryItem(sku, context, categoryId, recoveredAspects)
 
-    const offerId = await this.findOrCreateOffer(sku, context, category.categoryId)
+    const offerId = await this.findOrCreateOffer(sku, context, categoryId)
     const listingId = await this.publishOffer(offerId)
 
     return { platformListingId: offerId, platformUrl: itemUrl(listingId) }
   }
 
   /** Idempotent by design - PUT replaces whatever is there. */
+  /** Trading API transport, sharing the injected fetch used for REST. */
+  private tradingOptions() {
+    return {
+      fetchImpl: this.fetchOptions.fetchImpl,
+      getToken: this.fetchOptions.getToken,
+      sleep: this.fetchOptions.sleep,
+    }
+  }
+
   private async putInventoryItem(
     sku: string,
     context: ListingContext,
     categoryId: string,
+    recoveredAspects: Record<string, string[]> = {},
   ) {
     const { item, photos } = context
 
@@ -180,7 +216,7 @@ export class EbayAdapter implements PlatformAdapter {
             // accepted convention is to say so explicitly.
             mpn: 'Does Not Apply',
             upc: ['Does not apply'],
-            aspects: buildAspects(item),
+            aspects: mergeAspects(buildAspects(item), recoveredAspects),
             imageUrls,
           },
         },
@@ -296,11 +332,7 @@ export class EbayAdapter implements PlatformAdapter {
   private async endLegacyListing(itemId: string): Promise<void> {
     try {
       // Pass the injected transport through so tests never reach eBay.
-      await endItem(itemId, 'NotAvailable', {
-        fetchImpl: this.fetchOptions.fetchImpl,
-        getToken: this.fetchOptions.getToken,
-        sleep: this.fetchOptions.sleep,
-      })
+      await endItem(itemId, 'NotAvailable', this.tradingOptions())
     } catch (cause) {
       if (cause instanceof TradingApiError) {
         // 1047 / 1048: auction already ended or item not found - the
