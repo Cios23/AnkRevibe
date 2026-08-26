@@ -82,3 +82,136 @@ export function conditionDescription(
   // eBay caps this at 1000 characters.
   return parts.join(' ').slice(0, 1000)
 }
+
+// ---------------------------------------------------------------------------
+// Category-aware resolution
+//
+// The enums above are the cross-category set. Apparel categories reject
+// them: category 52365 (Men's Hats) accepts only 1000/1500/1750/2990/3000/
+// 3010 - "New with tags" ... "Pre-owned - Fair" - and a publish with
+// USED_GOOD fails with error 25021, after the inventory item and offer have
+// already been created.
+//
+// Rather than hard-code which category families use which set, ask eBay for
+// the category's allowed conditions and match against them. Imported items
+// carry eBay's own display names ("Pre-owned - Good"), so the match is
+// usually exact.
+
+import { ebayFetch, type EbayFetchOptions } from '@/lib/ebay/client'
+import { marketplaceId } from '@/lib/ebay/config'
+
+/**
+ * ConditionEnum -> the numeric conditionId eBay translates it to.
+ *
+ * This indirection is the whole problem. The Inventory API accepts only
+ * these enum names - PRE_OWNED_GOOD is rejected outright with "Could not
+ * serialize field [condition]" - but a category validates the resulting
+ * ID. Apparel categories allow 1000/1500/1750/2990/3000/3010, so USED_GOOD
+ * (5000) fails with 25021 even though it serializes fine, while
+ * USED_EXCELLENT (3000) succeeds and displays as "Pre-owned - Good".
+ *
+ * IDs 2990 and 3010 have no enum, so they are simply unreachable through
+ * this API.
+ */
+const ENUM_TO_CONDITION_ID: Record<string, number> = {
+  NEW: 1000,
+  NEW_OTHER: 1500,
+  NEW_WITH_DEFECTS: 1750,
+  MANUFACTURER_REFURBISHED: 2000,
+  CERTIFIED_REFURBISHED: 2000,
+  SELLER_REFURBISHED: 2500,
+  LIKE_NEW: 2750,
+  USED_EXCELLENT: 3000,
+  USED_VERY_GOOD: 4000,
+  USED_GOOD: 5000,
+  USED_ACCEPTABLE: 6000,
+  FOR_PARTS_OR_NOT_WORKING: 7000,
+}
+
+export type AllowedCondition = { conditionId: string; description: string }
+
+const policyCache = new Map<string, AllowedCondition[]>()
+
+export function clearConditionPolicyCache() {
+  policyCache.clear()
+}
+
+export async function getAllowedConditions(
+  categoryId: string,
+  options: EbayFetchOptions = {},
+): Promise<AllowedCondition[]> {
+  const cached = policyCache.get(categoryId)
+  if (cached) return cached
+
+  const body = await ebayFetch<{
+    itemConditionPolicies?: Array<{
+      itemConditions?: Array<{ conditionId?: string; conditionDescription?: string }>
+    }>
+  }>(
+    `/sell/metadata/v1/marketplace/${marketplaceId()}` +
+      `/get_item_condition_policies?filter=categoryIds:{${categoryId}}`,
+    options,
+  )
+
+  const allowed = (body?.itemConditionPolicies?.[0]?.itemConditions ?? [])
+    .filter((c) => c.conditionId)
+    .map((c) => ({
+      conditionId: String(c.conditionId),
+      description: String(c.conditionDescription ?? ''),
+    }))
+
+  policyCache.set(categoryId, allowed)
+  return allowed
+}
+
+/**
+ * The ConditionEnum to send for this item in this category.
+ *
+ * Resolves to a target conditionId from the category's own published list -
+ * imported items carry eBay's display names, so that match is usually
+ * exact - then picks the enum that maps to it. When the target ID has no
+ * enum, falls back to the nearest reachable one, preferring to understate
+ * (a higher ID) so a listing never claims better condition than it has.
+ */
+export async function resolveConditionForCategory(
+  value: string | null | undefined,
+  categoryId: string,
+  options: EbayFetchOptions = {},
+): Promise<string> {
+  const allowed = await getAllowedConditions(categoryId, options)
+  if (allowed.length === 0) return mapCondition(value)
+
+  const allowedIds = new Set(allowed.map((c) => Number(c.conditionId)))
+
+  const reachable = Object.entries(ENUM_TO_CONDITION_ID)
+    .filter(([, id]) => allowedIds.has(id))
+    .sort((a, b) => a[1] - b[1])
+
+  // The category publishes conditions we cannot express at all.
+  if (reachable.length === 0) return mapCondition(value)
+
+  const wanted = value ? normaliseCondition(value) : ''
+
+  // Target id: exact display-name match against the category's own list.
+  let targetId: number | null = null
+  for (const candidate of allowed) {
+    if (normaliseCondition(candidate.description) === wanted) {
+      targetId = Number(candidate.conditionId)
+      break
+    }
+  }
+
+  // Otherwise fall back to our generic mapping's id.
+  if (targetId === null) {
+    targetId = ENUM_TO_CONDITION_ID[mapCondition(value)] ?? 5000
+  }
+
+  // Exact hit.
+  const exact = reachable.find(([, id]) => id === targetId)
+  if (exact) return exact[0]
+
+  // Nearest reachable, understating rather than overstating.
+  const worse = reachable.filter(([, id]) => id > targetId!)
+  if (worse.length) return worse[0][0]
+  return reachable[reachable.length - 1][0]
+}

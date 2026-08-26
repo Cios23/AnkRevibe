@@ -6,7 +6,10 @@ import {
   marketplaceId,
   merchantLocationKey,
 } from '@/lib/ebay/config'
-import { conditionDescription, mapCondition } from '@/lib/ebay/conditions'
+import {
+  conditionDescription,
+  resolveConditionForCategory,
+} from '@/lib/ebay/conditions'
 import type {
   CreatedListing,
   ListingContext,
@@ -48,18 +51,29 @@ function itemUrl(listingId: string): string {
     : `https://www.ebay.com/itm/${listingId}`
 }
 
-/** eBay item specifics. Only non-empty values are sent. */
+/**
+ * eBay item specifics. Empty values are omitted, except Brand and MPN.
+ *
+ * Many categories make the Brand/MPN pair mandatory and reject a publish
+ * with error 25002 "Input data for tag <BrandMPN> is invalid or missing"
+ * when either is absent - which is a *publish*-time failure, after the
+ * inventory item and offer have already been created. Resale inventory
+ * rarely has a manufacturer part number at all, so the accepted convention
+ * is to state that explicitly rather than omit the field.
+ */
 export function buildAspects(item: Inventory): Record<string, string[]> {
   const aspects: Record<string, string[]> = {}
   const add = (name: string, value: string | null | undefined) => {
     const trimmed = value?.trim()
     if (trimmed) aspects[name] = [trimmed]
   }
-  add('Brand', item.brand)
   add('Size', item.size)
   add('Color', item.color)
   add('Style', item.style_era)
   add('Department', item.subcategory)
+
+  aspects.Brand = [item.brand?.trim() || 'Unbranded']
+
   return aspects
 }
 
@@ -106,18 +120,33 @@ export class EbayAdapter implements PlatformAdapter {
       throw new Error(`Cannot list ${item.id} on eBay: at least one photo is required.`)
     }
 
-    const sku = skuFor(item)
-    await this.putInventoryItem(sku, context)
+    // Category first: the valid condition set depends on it, and sending a
+    // condition the category rejects fails at publish - after the inventory
+    // item and offer already exist.
+    const category = await resolveCategoryId(item, this.opts())
 
-    const offerId = await this.findOrCreateOffer(sku, context)
+    const sku = skuFor(item)
+    await this.putInventoryItem(sku, context, category.categoryId)
+
+    const offerId = await this.findOrCreateOffer(sku, context, category.categoryId)
     const listingId = await this.publishOffer(offerId)
 
     return { platformListingId: offerId, platformUrl: itemUrl(listingId) }
   }
 
   /** Idempotent by design - PUT replaces whatever is there. */
-  private async putInventoryItem(sku: string, context: ListingContext) {
+  private async putInventoryItem(
+    sku: string,
+    context: ListingContext,
+    categoryId: string,
+  ) {
     const { item, photos } = context
+
+    const condition = await resolveConditionForCategory(
+      item.condition,
+      categoryId,
+      this.opts(),
+    )
 
     const imageUrls = [...photos]
       .sort((a, b) => (a.position ?? 0) - (b.position ?? 0))
@@ -134,7 +163,7 @@ export class EbayAdapter implements PlatformAdapter {
           availability: {
             shipToLocationAvailability: { quantity: 1 },
           },
-          condition: mapCondition(item.condition),
+          condition,
           conditionDescription: conditionDescription(
             item.condition,
             item.flaw_notes,
@@ -142,7 +171,15 @@ export class EbayAdapter implements PlatformAdapter {
           product: {
             title: (item.title ?? 'Untitled').slice(0, 80), // eBay title cap
             description: buildDescription(item),
-            brand: item.brand ?? undefined,
+            brand: item.brand?.trim() || 'Unbranded',
+            // Product identifiers, NOT aspects. Many categories require one
+            // and reject the publish with error 25002 "<BrandMPN> is invalid
+            // or missing" when none is present - a publish-time failure,
+            // after the inventory item and offer already exist. Second-hand
+            // clothing has no manufacturer part number or barcode, so the
+            // accepted convention is to say so explicitly.
+            mpn: 'Does Not Apply',
+            upc: ['Does not apply'],
             aspects: buildAspects(item),
             imageUrls,
           },
@@ -169,16 +206,16 @@ export class EbayAdapter implements PlatformAdapter {
   private async findOrCreateOffer(
     sku: string,
     context: ListingContext,
+    categoryId: string,
   ): Promise<string> {
     const { item, price } = context
-    const category = await resolveCategoryId(item, this.opts())
 
     const payload = {
       sku,
       marketplaceId: marketplaceId(),
       format: 'FIXED_PRICE',
       availableQuantity: 1,
-      categoryId: category.categoryId,
+      categoryId,
       listingDescription: buildDescription(item),
       listingPolicies: listingPolicyIds(),
       merchantLocationKey: merchantLocationKey(),

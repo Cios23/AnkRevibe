@@ -17,6 +17,7 @@ const {
   STATIC_CATEGORY_MAP,
 } = await import('../lib/ebay/categories')
 const { ebayFetch, EbayApiError } = await import('../lib/ebay/client')
+const { clearConditionPolicyCache } = await import('../lib/ebay/conditions')
 const { EbayAdapter, buildAspects, buildDescription, skuFor } = await import(
   '../lib/platforms/ebay'
 )
@@ -68,6 +69,25 @@ function mockFetch(routes: Route[]) {
   }) as unknown as typeof fetch
 
   return { impl, calls }
+}
+
+/** Category 57988 allows the apparel condition set, not the generic enums. */
+const CONDITION_ROUTE: Route = {
+  method: 'GET',
+  match: /get_item_condition_policies/,
+  body: {
+    itemConditionPolicies: [
+      {
+        itemConditions: [
+          { conditionId: '1000', conditionDescription: 'New with tags' },
+          { conditionId: '1500', conditionDescription: 'New without tags' },
+          { conditionId: '2990', conditionDescription: 'Pre-owned - Excellent' },
+          { conditionId: '3000', conditionDescription: 'Pre-owned - Good' },
+          { conditionId: '3010', conditionDescription: 'Pre-owned - Fair' },
+        ],
+      },
+    ],
+  },
 }
 
 const baseOptions = (impl: typeof fetch) => ({
@@ -281,11 +301,11 @@ describe('ebayFetch error handling', () => {
 describe('EbayAdapter payload building', () => {
   test('builds item specifics from the inventory row', () => {
     assert.deepEqual(buildAspects(ITEM), {
-      Brand: ["Levi's"],
       Size: ['L'],
       Color: ['Blue'],
       Style: ['1990s'],
       Department: ['mens'],
+      Brand: ["Levi's"],
     })
   })
 
@@ -293,6 +313,10 @@ describe('EbayAdapter payload building', () => {
     const aspects = buildAspects({ ...ITEM, color: null, style_era: '   ' })
     assert.ok(!('Color' in aspects))
     assert.ok(!('Style' in aspects))
+  })
+
+  test('Brand is always present, falling back to Unbranded', () => {
+    assert.deepEqual(buildAspects({ ...ITEM, brand: null }).Brand, ['Unbranded'])
   })
 
   test('description folds in measurements and flaw notes', () => {
@@ -313,7 +337,10 @@ describe('EbayAdapter payload building', () => {
 })
 
 describe('EbayAdapter.createListing', () => {
+  beforeEach(() => clearConditionPolicyCache())
+
   const publishRoutes: Route[] = [
+    CONDITION_ROUTE,
     { method: 'PUT', match: /inventory_item/, status: 204 },
     { method: 'GET', match: /\/offer\?sku=/, body: { offers: [] } },
     { method: 'POST', match: /\/offer$/, body: { offerId: 'offer-99' } },
@@ -333,7 +360,10 @@ describe('EbayAdapter.createListing', () => {
     assert.equal(result.platformListingId, 'offer-99')
     assert.equal(result.platformUrl, 'https://www.ebay.com/itm/1234567890')
 
-    const sequence = calls.map((c) => `${c.method} ${c.url.split('/sell/inventory/v1')[1] ?? c.url}`)
+    const inventoryCalls = calls.filter((c) => c.url.includes('/sell/inventory/v1'))
+    const sequence = inventoryCalls.map(
+      (c) => `${c.method} ${c.url.split('/sell/inventory/v1')[1]}`,
+    )
     assert.equal(sequence.length, 4)
     assert.match(sequence[0], /^PUT \/inventory_item/)
     assert.match(sequence[3], /publish/)
@@ -352,6 +382,19 @@ describe('EbayAdapter.createListing', () => {
       'https://img.invalid/a.jpg',
       'https://img.invalid/b.jpg',
     ])
+  })
+
+  test('sends product identifiers - publish 25002 <BrandMPN> otherwise', async () => {
+    const { impl, calls } = mockFetch(publishRoutes)
+    await new EbayAdapter(baseOptions(impl)).createListing({
+      item: ITEM,
+      photos: PHOTOS,
+      price: 78,
+    })
+    const put = calls.find((c) => c.method === 'PUT')!
+    assert.equal(put.body.product.mpn, 'Does Not Apply')
+    assert.deepEqual(put.body.product.upc, ['Does not apply'])
+    assert.equal(put.body.product.brand, "Levi's")
   })
 
   test('sends Content-Language, which eBay 400s without', async () => {
@@ -388,6 +431,7 @@ describe('EbayAdapter.createListing', () => {
 
   test('updates an existing offer instead of creating a duplicate', async () => {
     const { impl, calls } = mockFetch([
+      CONDITION_ROUTE,
       { method: 'PUT', match: /inventory_item/, status: 204 },
       { method: 'GET', match: /\/offer\?sku=/, body: { offers: [{ offerId: 'offer-existing' }] } },
       { method: 'PUT', match: /\/offer\/offer-existing$/, status: 204 },
@@ -422,6 +466,20 @@ describe('EbayAdapter.createListing', () => {
       () => new EbayAdapter(baseOptions(impl)).createListing({ item: ITEM, photos: [], price: 78 }),
       /at least one photo/,
     )
+  })
+
+  test('uses the CATEGORY’s condition set, not the generic enums', async () => {
+    // USED_GOOD is rejected by apparel categories with error 25021.
+    const { impl, calls } = mockFetch(publishRoutes)
+    await new EbayAdapter(baseOptions(impl)).createListing({
+      item: { ...ITEM, condition: 'Pre-owned - Good' },
+      photos: PHOTOS,
+      price: 78,
+    })
+    const put = calls.find((c) => c.method === 'PUT')!
+    // "Pre-owned - Good" is condition id 3000, and USED_EXCELLENT is the
+    // only enum that maps to it. PRE_OWNED_GOOD is not a valid enum.
+    assert.equal(put.body.condition, 'USED_EXCELLENT')
   })
 
   test('title is truncated to eBay’s 80-char limit', async () => {
@@ -498,8 +556,11 @@ describe('EbayAdapter.delist', () => {
 })
 
 describe('EbayAdapter.relist', () => {
+  beforeEach(() => clearConditionPolicyCache())
+
   test('republishes from the sku and returns the new offer id', async () => {
     const { impl } = mockFetch([
+      CONDITION_ROUTE,
       { method: 'PUT', match: /inventory_item/, status: 204 },
       { method: 'GET', match: /\/offer\?sku=/, body: { offers: [{ offerId: 'offer-7' }] } },
       { method: 'PUT', match: /\/offer\/offer-7$/, status: 204 },
