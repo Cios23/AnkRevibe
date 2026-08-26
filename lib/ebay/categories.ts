@@ -29,9 +29,12 @@ export const STATIC_CATEGORY_MAP: Record<string, string> = {
   'tops/womens': '53159',
   'sweaters/mens': '11484',
   'sweaters/womens': '63866',
-  'shoes/mens': '93427',
-  'shoes/womens': '3034',
   dresses: '63861',
+  // Shoes are deliberately absent. 93427 (Men's Shoes) and 3034 (Women's
+  // Shoes) are BROWSE nodes, not leaves - `npm run ebay:categories` flags
+  // them and a publish into either would fail. The right leaf depends on
+  // style (Sneakers vs Boots vs Dress), which a single static entry cannot
+  // express, so shoes fall through to eBay's per-item suggestion instead.
 }
 
 export function staticCategoryKey(

@@ -30,6 +30,7 @@ export function marketplaceId(): string {
 /**
  * Scopes the integration needs.
  *
+ * api_scope       - Taxonomy API: category tree + category suggestions
  * sell.inventory  - create/replace inventory items, offers, publish, withdraw
  * sell.account    - read business policies
  *
@@ -37,6 +38,9 @@ export function marketplaceId(): string {
  * means re-running `npm run ebay:auth` to mint a new refresh token.
  */
 export const EBAY_SCOPES = [
+  // Base scope. The Taxonomy API (category suggestions) requires this one
+  // specifically - the sell.* scopes alone return 403 [1100].
+  'https://api.ebay.com/oauth/api_scope',
   'https://api.ebay.com/oauth/api_scope/sell.inventory',
   'https://api.ebay.com/oauth/api_scope/sell.account',
 ]
@@ -57,7 +61,22 @@ export function requireEnv(names: string[]): Record<string, string> {
   return Object.fromEntries(names.map((n) => [n, process.env[n]!]))
 }
 
-/** Business policy + location IDs required to publish an offer. */
+/**
+ * Business policy + location IDs required to publish an offer.
+ *
+ * FUTURE WORK: fulfillment policy is currently one flat default
+ * ("Clothing Items"), but shipping cost on this account is banded by
+ * garment weight and there are per-band policies already set up:
+ *
+ *   261742192018  T-Shirts/Shorts   $5
+ *   261742395018  Sweatshirts       $8
+ *   261742420018  Light Coats/Jeans $10
+ *   261742440018  Heavy Coat
+ *   262546430018  Free Apparel
+ *
+ * Picking per category (or per weight on the inventory row) would stop us
+ * under-charging shipping on heavy items. Deliberately deferred.
+ */
 export function listingPolicyIds() {
   const env = requireEnv([
     'EBAY_FULFILLMENT_POLICY_ID',
