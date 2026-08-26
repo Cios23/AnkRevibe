@@ -17,7 +17,8 @@
     "ebay:import": "tsx scripts/ebay-import.mts",
     "health:backfill": "tsx --conditions=react-server scripts/health-backfill.mts",
     "ebay:live-test": "tsx --conditions=react-server scripts/ebay-live-test.mts",
-    "ebay:bulk-publish": "tsx --conditions=react-server scripts/ebay-bulk-publish.mts"
+    "ebay:bulk-publish": "tsx --conditions=react-server scripts/ebay-bulk-publish.mts",
+    "ebay:reconcile": "tsx scripts/ebay-reconcile.mts"
   },
   "dependencies": {
     "@supabase/ssr": "^0.12.5",
