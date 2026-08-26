@@ -4,9 +4,10 @@ Ported from the ResellOS extension (`F:\Downloads\ai-co-pilot-chat-main\extensio
 scoped to **Poshmark and Depop only** and repointed at the AnK ReVibe Supabase
 project.
 
-**Not yet loaded or tested against the live marketplaces.** It parses, the
-manifest resolves, and the structure is right; every DOM selector is inherited
-unverified. See Assumptions.
+**Not yet loaded in Chrome, and not tested against the live marketplaces.**
+It parses, the manifest resolves, the auth bridge is verified against a real
+session, and the margin arithmetic is unit-tested. Every DOM selector is still
+inherited unverified. See Assumptions.
 
 ## What it does
 
@@ -47,12 +48,32 @@ publish so a bad mapping cannot create a live listing unattended.
 
 ## Assumptions and known gaps
 
-**1. Auth token source is uncertain.** The web app uses `@supabase/ssr`, which
-stores the session in **cookies, not localStorage** — so ResellOS's approach
-finds nothing here. `content-scripts/ankrevibe.js` tries, in order:
-`localStorage.ankrevibe_extension_token` → any supabase localStorage key →
-the `sb-<ref>-auth-token` cookie (including chunked `.0/.1` form). The cookie
-path should work, but the robust fix is one line in the web app:
+**1. Auth token capture — VERIFIED, after a real bug.** The web app uses
+`@supabase/ssr`, which stores the session in **cookies, not localStorage**, so
+ResellOS's approach finds nothing here. `content-scripts/ankrevibe.js` tries,
+in order: `localStorage.ankrevibe_extension_token` → any supabase localStorage
+key → the `sb-<ref>-auth-token` cookie (including the chunked `.0/.1` form).
+
+The cookie path **was broken as first written**: `@supabase/ssr` encodes the
+session as `base64-<payload>`, and the single-cookie branch passed that
+straight to `JSON.parse`, so the bridge recovered nothing and the popup would
+have read "not signed in" forever. Verified against a real session — sign in
+through the app's own `createServerClient`, run the bridge's parser over the
+cookies it writes, then make the popup's exact PostgREST call:
+
+```
+2. signed in, cookies written: sb-…-auth-token (2639 chars)
+3. bridge cookie parser: recovered a token (818 chars)
+4. popup query with that token: HTTP 200 → 1 row readable
+5. anon key alone: HTTP 200, 0 rows (RLS holding)
+```
+
+`test/auth-bridge.test.mts` pins this. Still unverified: Chrome actually
+executing the content script and rendering the popup — everything up to that
+point is proven.
+
+The explicit key remains the most robust option if you want to remove the
+dependency on cookie format entirely:
 
 ```ts
 localStorage.setItem('ankrevibe_extension_token', session.access_token)
@@ -85,9 +106,26 @@ price ≥ the listing price, and we have no MSRP, so it uses `price × 1.8`
 rounded. Carried over from ResellOS. Change it in `fillPriceFields` if that
 inflated anchor isn't what you want buyers to see.
 
-**7. Offer thresholds are price floors, not margin.** `offer_min_profit` and
-`accept_min_profit` compare against the offer amount. The extension never sees
-`purchase_cost`, so it cannot reason about actual profit despite the naming.
+**7. Offer thresholds are real margin.** `offer_min_profit` and
+`accept_min_profit` compare against
+`poshmarkNetProceeds(offer) - purchase_cost`, where net proceeds subtract
+Poshmark's published commission (flat $2.95 under $15, otherwise 20%).
+
+`offer-sender.js` runs on Poshmark's own pages and has no link back to our
+inventory, so the background builds a `platform_listing_id → purchase_cost`
+map from Supabase and passes it in. The join key is the last path segment of
+the listing URL — the same value `content-scripts/poshmark.js` records as
+`platform_listing_id`.
+
+Items with no `purchase_cost` are **skipped**, not judged on price; untick
+"Require known cost" to fall back to the old price-floor behaviour. The
+arithmetic is unit-tested in `test/margin.test.mts`, including the case that
+motivated it: a $12 offer on a $9 item reads as $3 of profit and actually
+nets five cents.
+
+Caveat: the fee model covers standard Poshmark commission only. It ignores
+shipping discounts you fund, promoted-listing fees, and any seller-fee
+promotion — so treat the margin as an upper bound.
 
 **8. Depop relist needs history.** It works from `depop_listing_urls`, which
 accumulates only as the extension observes crossposts. It does nothing until
@@ -113,6 +151,7 @@ manifest.json                    MV3 manifest
 config.js                        Supabase URL + anon key, app origins
 background.js                    service worker: alarms, tab orchestration, relist
 lib/dom.js                       shared DOM helpers (deduped from the original)
+lib/margin.js                    Poshmark fee + margin arithmetic (unit-tested)
 lib/sync.js                      PostgREST writes (replaces the Edge Function)
 content-scripts/ankrevibe.js     bridge: token capture, presence marker
 content-scripts/poshmark.js      Poshmark create-listing fill

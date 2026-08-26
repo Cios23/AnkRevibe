@@ -14,6 +14,7 @@
     auto_accept_enabled: false,
     accept_floor_percent: 10,
     accept_min_profit: 10,
+    offer_require_known_cost: true,
     depop_relist_percent: 10,
   };
 
@@ -123,7 +124,8 @@
     const invUrl =
       cfg.SUPABASE_URL +
       "/rest/v1/inventory?select=id,title,brand,size,condition,description," +
-      "poshmark_price,depop_price&status=eq.active&order=created_at.desc&limit=200";
+      "purchase_cost,poshmark_price,depop_price" +
+      "&status=eq.active&order=created_at.desc&limit=200";
 
     const res = await fetch(invUrl, { headers });
     if (!res.ok) throw new Error("HTTP " + res.status);
@@ -175,6 +177,7 @@
         item.size,
         item.condition,
         item.photos.length + " photos",
+        item.purchase_cost == null ? "no cost" : "cost $" + item.purchase_cost,
       ]
         .filter(Boolean)
         .join(" · ");
@@ -205,6 +208,12 @@
                 size: item.size,
                 condition: item.condition,
                 price,
+                // Carried so the listing payload is self-describing. The
+                // offer automation does NOT read it from here - it runs on
+                // Poshmark pages long after this, and gets costs from the
+                // map the background builds. See lib/sync.js.
+                purchaseCost:
+                  item.purchase_cost == null ? null : Number(item.purchase_cost),
                 photos: item.photos,
               },
             },

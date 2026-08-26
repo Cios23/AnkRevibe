@@ -13,6 +13,44 @@
     'li[data-et-element-type="listing"]',
   ].join(", ");
 
+  /** Margin arithmetic lives in lib/margin.js so it can be unit-tested. */
+  const { evaluateOffer } = globalThis.AnkMargin;
+
+  /**
+   * Poshmark listing ids are the last path segment of a listing URL, which
+   * is exactly what content-scripts/poshmark.js records as
+   * platform_listing_id - so a card's own link is the join key back to our
+   * inventory.
+   */
+  function listingIdFromCard(card) {
+    const anchor =
+      card.querySelector('a[href*="/listing/"]') ||
+      (card.tagName === "A" && card.getAttribute("href") ? card : null);
+    const href = anchor?.getAttribute("href") || "";
+    const match = href.split("?")[0].split("#")[0].match(/\/listing\/([^/]+)\/?$/);
+    if (match) return match[1];
+    return null;
+  }
+
+  function listingIdFromLocation() {
+    const match = window.location.pathname.match(/\/listing\/([^/]+)\/?$/);
+    return match ? match[1] : null;
+  }
+
+  /**
+   * Decide whether an offer clears the margin floor.
+   *
+   * Returns a reason rather than a bare boolean so the run can report why
+   * items were passed over.
+   */
+  function marginCheck(offerPrice, listingId, settings) {
+    const entry = settings.costMap?.[listingId];
+    return evaluateOffer(offerPrice, entry?.purchaseCost ?? null, {
+      minProfit: settings.minProfit,
+      requireKnownCost: settings.requireKnownCost,
+    });
+  }
+
   function setInputValue(el, value) {
     if (!el) return;
     const str = String(value);
@@ -54,14 +92,20 @@
     const minProfit = Number(settings?.minProfit) || 10;
 
     let offersSent = 0;
+    const skipped = [];
 
     try {
       const listings = document.querySelectorAll(LISTING_CARD_SELECTORS);
 
       for (const listing of listings) {
         try {
+          // Capture the join key BEFORE navigating away from the card.
+          const cardListingId = listingIdFromCard(listing);
+
           listing.click();
           await wait(2000);
+
+          const listingId = cardListingId || listingIdFromLocation();
 
           const offerBtn = queryOfferToLikersButton();
           if (!offerBtn) {
@@ -95,9 +139,14 @@
 
           const offerPrice = Math.round(currentPrice * (1 - discountPercent / 100));
 
-          // minProfit is a floor on the offer itself, not true profit - the
-          // extension has no visibility of purchase_cost. See README.
-          if (offerPrice < minProfit) {
+          const check = marginCheck(offerPrice, listingId, {
+            costMap: settings?.costMap,
+            requireKnownCost: settings?.requireKnownCost !== false,
+            minProfit,
+          });
+
+          if (!check.ok) {
+            skipped.push({ listingId, reason: check.reason });
             window.history.back();
             await wait(1000);
             continue;
@@ -161,6 +210,8 @@
     chrome.runtime.sendMessage({
       type: "OFFERS_COMPLETE",
       count: offersSent,
+      skipped: skipped.length,
+      skippedNoCost: skipped.filter((s) => s.reason === "no purchase_cost").length,
       platform: "poshmark",
     });
 
@@ -168,10 +219,11 @@
   }
 
   /**
-   * Accept incoming offers that are within acceptFloorPercent of list price.
+   * Accept incoming offers that are within acceptFloorPercent of list price
+   * AND clear the margin floor after Poshmark's commission.
    *
-   * Deliberately conservative: anything discounted further is left for a
-   * human, because the extension cannot see cost basis.
+   * Both gates must pass. The percentage guard alone would happily accept a
+   * near-list offer on an item bought above its list price.
    */
   async function autoAcceptOffers(settings) {
     const acceptFloorPercent = Number(settings?.acceptFloorPercent) || 10;
@@ -207,7 +259,14 @@
 
         const discountPct = ((listPrice - offerPrice) / listPrice) * 100;
 
-        if (discountPct <= acceptFloorPercent && offerPrice >= minProfit) {
+        const listingId = listingIdFromCard(offer) || listingIdFromLocation();
+        const check = marginCheck(offerPrice, listingId, {
+          costMap: settings?.costMap,
+          requireKnownCost: settings?.requireKnownCost !== false,
+          minProfit,
+        });
+
+        if (discountPct <= acceptFloorPercent && check.ok) {
           const acceptBtn = offer.querySelector(
             [
               'button[data-et-name="accept_offer"]',

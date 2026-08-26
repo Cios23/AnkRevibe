@@ -3,7 +3,12 @@
   "name": "AnK ReVibe Crosslister",
   "version": "0.1.0",
   "description": "Crosslist AnK ReVibe inventory to Poshmark and Depop, with auto-share, auto-offer and Depop relist.",
-  "permissions": ["alarms", "storage", "scripting", "tabs"],
+  "permissions": [
+    "alarms",
+    "storage",
+    "scripting",
+    "tabs"
+  ],
   "host_permissions": [
     "http://localhost:3000/*",
     "https://poshmark.com/*",
@@ -20,8 +25,12 @@
   },
   "content_scripts": [
     {
-      "matches": ["http://localhost:3000/*"],
-      "js": ["content-scripts/ankrevibe.js"],
+      "matches": [
+        "http://localhost:3000/*"
+      ],
+      "js": [
+        "content-scripts/ankrevibe.js"
+      ],
       "run_at": "document_idle"
     },
     {
@@ -29,7 +38,10 @@
         "https://poshmark.com/create-listing*",
         "https://*.poshmark.com/create-listing*"
       ],
-      "js": ["lib/dom.js", "content-scripts/poshmark.js"],
+      "js": [
+        "lib/dom.js",
+        "content-scripts/poshmark.js"
+      ],
       "run_at": "document_idle"
     },
     {
@@ -39,7 +51,9 @@
         "https://poshmark.com/listings*",
         "https://*.poshmark.com/listings*"
       ],
-      "js": ["automation/poshmark-share.js"],
+      "js": [
+        "automation/poshmark-share.js"
+      ],
       "run_at": "document_idle"
     },
     {
@@ -51,12 +65,20 @@
         "https://poshmark.com/offer*",
         "https://*.poshmark.com/offer*"
       ],
-      "js": ["automation/offer-sender.js"],
+      "js": [
+        "lib/margin.js",
+        "automation/offer-sender.js"
+      ],
       "run_at": "document_idle"
     },
     {
-      "matches": ["https://www.depop.com/products/create*"],
-      "js": ["lib/dom.js", "content-scripts/depop.js"],
+      "matches": [
+        "https://www.depop.com/products/create*"
+      ],
+      "js": [
+        "lib/dom.js",
+        "content-scripts/depop.js"
+      ],
       "run_at": "document_idle"
     }
   ]

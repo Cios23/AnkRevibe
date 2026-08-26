@@ -73,9 +73,28 @@
   }
 
   /**
+   * @supabase/ssr encodes the session as `base64-<base64url payload>`, for
+   * both the single-cookie and the chunked form. Decode before parsing -
+   * skipping this was why the cookie path originally recovered nothing.
+   */
+  function decodeSessionValue(raw) {
+    let value = decodeURIComponent(raw);
+    if (value.indexOf("base64-") === 0) {
+      const payload = value.slice("base64-".length).replace(/-/g, "+").replace(/_/g, "/");
+      try {
+        value = atob(payload);
+      } catch {
+        return null;
+      }
+    }
+    return value;
+  }
+
+  /**
    * 3. The @supabase/ssr cookie. Readable because the browser client needs
    * it too, so it is not httpOnly. Large sessions are split across
-   * .0/.1/... chunks, which must be concatenated in order.
+   * .0/.1/... chunks, which must be concatenated in order before decoding -
+   * each chunk is a slice of one base64 string, not valid base64 itself.
    */
   function fromCookie() {
     try {
@@ -87,20 +106,18 @@
       }
 
       const exact = jar[SESSION_KEY];
-      if (exact) return tokenFromValue(decodeURIComponent(exact));
+      if (exact) {
+        const decoded = decodeSessionValue(exact);
+        return decoded ? tokenFromValue(decoded) : null;
+      }
 
       const chunks = Object.keys(jar)
         .filter((k) => k.indexOf(SESSION_KEY + ".") === 0)
         .sort((a, b) => Number(a.split(".").pop()) - Number(b.split(".").pop()));
       if (!chunks.length) return null;
 
-      let joined = chunks.map((k) => jar[k]).join("");
-      joined = decodeURIComponent(joined);
-      // @supabase/ssr prefixes chunked JSON payloads.
-      if (joined.indexOf("base64-") === 0) {
-        joined = atob(joined.slice("base64-".length));
-      }
-      return tokenFromValue(joined);
+      const decoded = decodeSessionValue(chunks.map((k) => jar[k]).join(""));
+      return decoded ? tokenFromValue(decoded) : null;
     } catch {
       return null;
     }

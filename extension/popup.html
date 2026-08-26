@@ -222,9 +222,15 @@
         <label for="accept_min_profit">Minimum accept $</label>
         <input type="number" id="accept_min_profit" min="0" />
       </div>
+      <div class="row">
+        <label for="offer_require_known_cost">Require known cost</label>
+        <input type="checkbox" id="offer_require_known_cost" />
+      </div>
       <p class="hint">
-        These thresholds are on price, not margin — the extension cannot see
-        purchase cost.
+        Minimums are real margin: Poshmark's fee (flat $2.95 under $15, else
+        20%) is subtracted, then <code>purchase_cost</code>. With "require
+        known cost" on, items without a cost are skipped rather than judged
+        on price alone.
       </p>
 
       <hr />

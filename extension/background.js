@@ -106,9 +106,19 @@ function onShareAlarm() {
 
 function onOffersAlarm() {
   chrome.storage.local.get(
-    ["auto_offers_enabled", "offer_discount_percent", "offer_min_profit"],
-    (prefs) => {
+    [
+      "auto_offers_enabled",
+      "offer_discount_percent",
+      "offer_min_profit",
+      "offer_require_known_cost",
+    ],
+    async (prefs) => {
       if (!prefs.auto_offers_enabled) return;
+
+      // Margin needs purchase_cost, which only Supabase has.
+      const token = await readToken();
+      const costMap = await globalThis.AnkSync.fetchPoshmarkCostMap(token);
+
       chrome.tabs.create(
         { url: "https://poshmark.com/closet", active: false },
         (tab) => {
@@ -119,6 +129,8 @@ function onOffersAlarm() {
               settings: {
                 discountPercent: prefs.offer_discount_percent ?? 10,
                 minProfit: prefs.offer_min_profit ?? 10,
+                requireKnownCost: prefs.offer_require_known_cost !== false,
+                costMap,
               },
             });
           }, 5000);
@@ -130,9 +142,18 @@ function onOffersAlarm() {
 
 function onCheckOffersAlarm() {
   chrome.storage.local.get(
-    ["auto_accept_enabled", "accept_floor_percent", "accept_min_profit"],
-    (prefs) => {
+    [
+      "auto_accept_enabled",
+      "accept_floor_percent",
+      "accept_min_profit",
+      "offer_require_known_cost",
+    ],
+    async (prefs) => {
       if (!prefs.auto_accept_enabled) return;
+
+      const token = await readToken();
+      const costMap = await globalThis.AnkSync.fetchPoshmarkCostMap(token);
+
       chrome.tabs.query({ url: POSHMARK_PATTERNS }, (tabs) => {
         if (chrome.runtime.lastError || !tabs?.length || tabs[0].id == null) return;
         sendTabMessageWithRetry(tabs[0].id, {
@@ -140,6 +161,8 @@ function onCheckOffersAlarm() {
           settings: {
             acceptFloorPercent: prefs.accept_floor_percent ?? 10,
             minProfit: prefs.accept_min_profit ?? 10,
+            requireKnownCost: prefs.offer_require_known_cost !== false,
+            costMap,
           },
         });
       });

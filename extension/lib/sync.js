@@ -93,5 +93,47 @@
     }
   }
 
-  globalThis.AnkSync = { saveCrosspost, markInventoryActive };
+  /**
+   * Build a Poshmark-listing-id -> cost map so the offer automation can
+   * reason about margin.
+   *
+   * offer-sender.js walks Poshmark's own DOM and has no link back to our
+   * inventory, so without this it can only compare against the raw offer
+   * amount. The key is platform_listings.platform_listing_id, which
+   * content-scripts/poshmark.js records as the last path segment of the
+   * listing URL - the same value the offer automation reads off a card.
+   */
+  async function fetchPoshmarkCostMap(token) {
+    if (!token) return {};
+
+    const url =
+      cfg().SUPABASE_URL +
+      "/rest/v1/platform_listings" +
+      "?select=platform_listing_id,listed_price,inventory:inventory(id,title,purchase_cost)" +
+      "&platform=eq.poshmark&status=eq.active&limit=1000";
+
+    try {
+      const res = await fetch(url, { headers: headers(token) });
+      if (!res.ok) return {};
+      const rows = await res.json();
+
+      const map = {};
+      for (const row of rows) {
+        if (!row.platform_listing_id) continue;
+        const inv = row.inventory;
+        map[row.platform_listing_id] = {
+          inventoryId: inv?.id ?? null,
+          title: inv?.title ?? null,
+          purchaseCost:
+            inv && inv.purchase_cost != null ? Number(inv.purchase_cost) : null,
+          listedPrice: row.listed_price != null ? Number(row.listed_price) : null,
+        };
+      }
+      return map;
+    } catch {
+      return {};
+    }
+  }
+
+  globalThis.AnkSync = { saveCrosspost, markInventoryActive, fetchPoshmarkCostMap };
 })();
