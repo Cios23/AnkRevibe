@@ -210,8 +210,18 @@ export async function resolveConditionForCategory(
   const exact = reachable.find(([, id]) => id === targetId)
   if (exact) return exact[0]
 
-  // Nearest reachable, understating rather than overstating.
-  const worse = reachable.filter(([, id]) => id > targetId!)
-  if (worse.length) return worse[0][0]
-  return reachable[reachable.length - 1][0]
+  // Nearest reachable by absolute distance, tie-broken toward the worse
+  // condition. Walking strictly downward instead would land a no-condition
+  // collectible on FOR_PARTS_OR_NOT_WORKING simply because the category
+  // happens to offer it - a far bigger error than being one grade off.
+  let best = reachable[0]
+  let bestDelta = Math.abs(best[1] - targetId)
+  for (const candidate of reachable) {
+    const delta = Math.abs(candidate[1] - targetId)
+    if (delta < bestDelta || (delta === bestDelta && candidate[1] > best[1])) {
+      best = candidate
+      bestDelta = delta
+    }
+  }
+  return best[0]
 }
