@@ -2,9 +2,19 @@
 -- Run AFTER 0001_init.sql, in the Supabase SQL editor.
 --
 -- Items 1 and 2 deliberately share the SAME photo URL: they stand in for
--- the same physical garment entered twice. Selling item 1 should raise a
--- health flag against item 2 (Hamming distance 0). Item 3 has a different
--- photo and should never be flagged.
+-- the same physical garment entered twice. Item 3 has a different photo
+-- and should never be flagged.
+--
+-- HOW TO EXERCISE THE LOOP (order matters):
+--   1. Run this file.
+--   2. In /dashboard/listings, click Crosspost on ALL THREE items.
+--      This is required, not optional: runHealthCheck only compares a sold
+--      item against items that have an ACTIVE platform_listings row. These
+--      rows are seeded as 'draft' with no listings, so selling before
+--      crossposting compares against nothing and flags nothing.
+--   3. Mark item 1 sold. Expect: its own listings flip to delisted, and
+--      /dashboard/health shows one open flag against item 2 at distance 0.
+--      Item 3 must not be flagged.
 
 with seeded as (
   insert into inventory

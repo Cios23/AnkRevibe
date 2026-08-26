@@ -1,8 +1,10 @@
 import 'server-only'
 
+import type { SupabaseClient } from '@supabase/supabase-js'
+
 import { createAdminClient } from '@/lib/supabase/admin'
 import { hammingDistance, hashImageUrl, PHASH_MATCH_THRESHOLD } from '@/lib/phash'
-import type { ListingPhoto } from '@/lib/types'
+import type { Database, ListingPhoto } from '@/lib/types'
 
 export type HealthCheckResult = {
   soldInventoryId: string
@@ -15,13 +17,55 @@ export type HealthCheckResult = {
   }>
 }
 
+/** Injectable seams so the pipeline is testable without a DB or network. */
+export type HealthCheckDeps = {
+  supabase?: SupabaseClient<Database>
+  /** Resolves a photo URL to a perceptual hash, or null if it can't be read. */
+  hashUrl?: (url: string) => Promise<string | null>
+  threshold?: number
+}
+
+/**
+ * The comparison itself, as a pure function: for each candidate item, the
+ * closest distance between any of its photos and any photo of the sold
+ * item. Items whose best distance is within `threshold` are matches.
+ *
+ * Kept separate from all I/O because this is the part with the actual
+ * judgement in it, and the part worth testing exhaustively.
+ */
+export function findPhashMatches(
+  soldPhotos: Pick<ListingPhoto, 'phash'>[],
+  candidatePhotos: Pick<ListingPhoto, 'phash' | 'inventory_id'>[],
+  threshold: number = PHASH_MATCH_THRESHOLD,
+): Array<{ inventoryId: string; distance: number }> {
+  const bestByItem = new Map<string, number>()
+
+  for (const candidate of candidatePhotos) {
+    if (!candidate.phash || !candidate.inventory_id) continue
+    for (const sold of soldPhotos) {
+      if (!sold.phash) continue
+      const distance = hammingDistance(sold.phash, candidate.phash)
+      const current = bestByItem.get(candidate.inventory_id)
+      if (current === undefined || distance < current) {
+        bestByItem.set(candidate.inventory_id, distance)
+      }
+    }
+  }
+
+  return Array.from(bestByItem.entries())
+    .filter(([, distance]) => distance <= threshold)
+    .map(([inventoryId, distance]) => ({ inventoryId, distance }))
+    .sort((a, b) => a.distance - b.distance || a.inventoryId.localeCompare(b.inventoryId))
+}
+
 /**
  * Fills in any missing perceptual hashes, writing them back so the work is
  * done once per photo rather than once per check.
  */
 async function ensureHashes(
-  supabase: ReturnType<typeof createAdminClient>,
+  supabase: SupabaseClient<Database>,
   photos: ListingPhoto[],
+  hashUrl: (url: string) => Promise<string | null>,
 ): Promise<{ photos: ListingPhoto[]; hashed: number }> {
   let hashed = 0
   const resolved: ListingPhoto[] = []
@@ -31,7 +75,7 @@ async function ensureHashes(
       resolved.push(photo)
       continue
     }
-    const phash = await hashImageUrl(photo.url)
+    const phash = await hashUrl(photo.url)
     if (!phash) continue
 
     await supabase.from('listing_photos').update({ phash }).eq('id', photo.id)
@@ -51,13 +95,16 @@ async function ensureHashes(
  * it should not be - either a delist call silently failed, or the item was
  * entered twice and only one copy was taken down.
  *
- * Uses the service-role client deliberately: the check has to see the whole
- * table, not the subset a given request's user can read.
+ * Defaults to the service-role client deliberately: the check has to see
+ * the whole table, not the subset a given request's user can read.
  */
 export async function runHealthCheck(
   soldInventoryId: string,
+  deps: HealthCheckDeps = {},
 ): Promise<HealthCheckResult> {
-  const supabase = createAdminClient()
+  const supabase = deps.supabase ?? createAdminClient()
+  const hashUrl = deps.hashUrl ?? hashImageUrl
+  const threshold = deps.threshold ?? PHASH_MATCH_THRESHOLD
 
   const { data: soldPhotosRaw, error: soldError } = await supabase
     .from('listing_photos')
@@ -65,7 +112,7 @@ export async function runHealthCheck(
     .eq('inventory_id', soldInventoryId)
   if (soldError) throw new Error(soldError.message)
 
-  const sold = await ensureHashes(supabase, soldPhotosRaw ?? [])
+  const sold = await ensureHashes(supabase, soldPhotosRaw ?? [], hashUrl)
 
   // Candidates: items other than the sold one that still have an active
   // listing on at least one platform.
@@ -99,25 +146,13 @@ export async function runHealthCheck(
     .in('inventory_id', candidateIds)
   if (candidateError) throw new Error(candidateError.message)
 
-  const candidates = await ensureHashes(supabase, candidatePhotosRaw ?? [])
-
-  // Best (lowest) distance per candidate item.
-  const bestByItem = new Map<string, number>()
-  for (const candidate of candidates.photos) {
-    if (!candidate.phash || !candidate.inventory_id) continue
-    for (const soldPhoto of sold.photos) {
-      if (!soldPhoto.phash) continue
-      const distance = hammingDistance(soldPhoto.phash, candidate.phash)
-      const current = bestByItem.get(candidate.inventory_id)
-      if (current === undefined || distance < current) {
-        bestByItem.set(candidate.inventory_id, distance)
-      }
-    }
-  }
-
-  const matches = Array.from(bestByItem.entries()).filter(
-    ([, distance]) => distance <= PHASH_MATCH_THRESHOLD,
+  const candidates = await ensureHashes(
+    supabase,
+    candidatePhotosRaw ?? [],
+    hashUrl,
   )
+
+  const matches = findPhashMatches(sold.photos, candidates.photos, threshold)
 
   // Don't pile up duplicates if the check is run more than once.
   const { data: existing } = await supabase
@@ -131,11 +166,11 @@ export async function runHealthCheck(
   )
 
   const toInsert = matches
-    .filter(([id]) => !alreadyFlagged.has(id))
-    .map(([id, distance]) => ({
+    .filter((m) => !alreadyFlagged.has(m.inventoryId))
+    .map((m) => ({
       sold_inventory_id: soldInventoryId,
-      flagged_inventory_id: id,
-      similarity_score: distance,
+      flagged_inventory_id: m.inventoryId,
+      similarity_score: m.distance,
       status: 'open' as const,
     }))
 
@@ -151,9 +186,9 @@ export async function runHealthCheck(
     photosHashed: sold.hashed + candidates.hashed,
     candidatesCompared: candidateIds.length,
     flagsCreated: toInsert.length,
-    flags: matches.map(([flaggedInventoryId, similarityScore]) => ({
-      flaggedInventoryId,
-      similarityScore,
+    flags: matches.map((m) => ({
+      flaggedInventoryId: m.inventoryId,
+      similarityScore: m.distance,
     })),
   }
 }

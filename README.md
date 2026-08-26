@@ -51,8 +51,52 @@ copy stays within threshold while a different image does not.
 
 ## Marketplace integrations
 
-`lib/platforms/` currently registers a stub adapter per platform. eBay is
-the only one of the four with a public listing API; Poshmark, Depop and
-Mercari will need a browser-automation worker. The orchestration layer is
-written against the `PlatformAdapter` interface, so swapping a stub for a
-real integration touches nothing else.
+`lib/platforms/` registers one adapter per platform behind the
+`PlatformAdapter` interface, so the crosspost / delist / relist
+orchestration is unaware of which are real.
+
+**eBay is live** against the Sell Inventory API. Poshmark, Depop and
+Mercari have no official write API and remain stubbed until a
+browser-automation worker exists.
+
+### eBay setup (one time)
+
+1. Create an application keyset in the eBay developer console and put
+   `EBAY_CLIENT_ID`, `EBAY_CLIENT_SECRET` and `EBAY_RUNAME` in `.env.local`.
+2. `npm run ebay:auth` — prints a consent URL. Approve it, then re-run with
+   the returned code:
+   `npm run ebay:auth -- --code "..."`. The refresh token (~18 months) is
+   written to `.env.local` automatically.
+3. `npm run ebay:policies` — lists your business policies and prints the
+   three `EBAY_*_POLICY_ID` lines to add.
+4. Create an inventory location on the eBay account and set
+   `EBAY_MERCHANT_LOCATION_KEY`.
+5. `npm run ebay:categories` — sanity-checks the static category map
+   against the live taxonomy.
+
+Access tokens last ~2 hours and are minted on demand from the refresh
+token; nothing needs pasting again. Set `EBAY_USE_STUB=true` to route eBay
+through the fake adapter for local work.
+
+### How a publish works
+
+Three calls, because eBay separates the garment from the sale terms:
+
+```
+PUT  /inventory_item/{sku}   title, photos, condition, item specifics
+POST /offer                  price, category, business policies
+POST /offer/{id}/publish     goes live, returns the item number
+```
+
+The SKU is derived from our inventory id, so the whole flow is idempotent —
+re-crossposting updates the existing offer rather than creating a duplicate
+listing. `platform_listings.platform_listing_id` stores the **offer id**
+(what withdraw/republish operate on), not the public item number.
+
+Delist withdraws the offer, keeping it for a later republish. A 404 or
+error 25002 ("not published") counts as success, since the desired end
+state — listing down — already holds.
+
+Category resolution prefers `STATIC_CATEGORY_MAP` and falls back to eBay's
+own taxonomy suggestion, so an unmapped or stale id degrades instead of
+failing.

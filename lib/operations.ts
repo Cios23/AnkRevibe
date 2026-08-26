@@ -2,10 +2,20 @@ import 'server-only'
 
 import type { SupabaseClient } from '@supabase/supabase-js'
 
-import { getAdapter } from '@/lib/platforms'
-import type { Database, Inventory, Platform } from '@/lib/types'
+import { getAdapter as defaultGetAdapter } from '@/lib/platforms'
+import type { PlatformAdapter } from '@/lib/platforms/adapter'
+import type { ListingContext } from '@/lib/platforms/adapter'
+import type { Database, Inventory, ListingPhoto, Platform } from '@/lib/types'
 
 type Client = SupabaseClient<Database>
+
+/**
+ * Injectable seam. Production passes nothing and gets the real registry;
+ * tests pass a fake so no marketplace call is ever made.
+ */
+export type OperationDeps = {
+  getAdapter?: (platform: Platform) => PlatformAdapter
+}
 
 function priceFor(item: Inventory, platform: Platform): number | null {
   switch (platform) {
@@ -30,6 +40,24 @@ async function loadItem(supabase: Client, inventoryId: string) {
   return data as Inventory
 }
 
+async function loadPhotos(supabase: Client, inventoryId: string) {
+  const { data, error } = await supabase
+    .from('listing_photos')
+    .select('*')
+    .eq('inventory_id', inventoryId)
+    .order('position', { ascending: true })
+  if (error) throw new Error(error.message)
+  return (data ?? []) as ListingPhoto[]
+}
+
+function contextFor(
+  item: Inventory,
+  photos: ListingPhoto[],
+  platform: Platform,
+): ListingContext {
+  return { item, photos, price: priceFor(item, platform) }
+}
+
 export type CrosspostResult = {
   platform: Platform
   status: 'active' | 'error'
@@ -46,14 +74,19 @@ export async function crosspost(
   supabase: Client,
   inventoryId: string,
   platforms: Platform[],
+  deps: OperationDeps = {},
 ): Promise<CrosspostResult[]> {
+  const getAdapter = deps.getAdapter ?? defaultGetAdapter
   const item = await loadItem(supabase, inventoryId)
+  const photos = await loadPhotos(supabase, inventoryId)
   const results: CrosspostResult[] = []
 
   for (const platform of platforms) {
     const price = priceFor(item, platform)
     try {
-      const listing = await getAdapter(platform).createListing(item, price)
+      const listing = await getAdapter(platform).createListing(
+        contextFor(item, photos, platform),
+      )
 
       const { error } = await supabase.from('platform_listings').upsert(
         {
@@ -119,7 +152,9 @@ export async function recordSale(
   soldPlatform: Platform,
   salePrice: number | null,
   buyerInfo: Record<string, unknown> | null = null,
+  deps: OperationDeps = {},
 ): Promise<SaleResult> {
+  const getAdapter = deps.getAdapter ?? defaultGetAdapter
   const soldAt = new Date().toISOString()
 
   const { error: inventoryError } = await supabase
@@ -202,8 +237,11 @@ export async function relist(
   supabase: Client,
   inventoryId: string,
   platforms?: Platform[],
+  deps: OperationDeps = {},
 ): Promise<RelistResult[]> {
+  const getAdapter = deps.getAdapter ?? defaultGetAdapter
   const item = await loadItem(supabase, inventoryId)
+  const photos = await loadPhotos(supabase, inventoryId)
 
   let query = supabase
     .from('platform_listings')
@@ -223,8 +261,7 @@ export async function relist(
     try {
       const created = await getAdapter(platform).relist(
         listing.platform_listing_id,
-        item,
-        price,
+        contextFor(item, photos, platform),
       )
       const { error: updateError } = await supabase
         .from('platform_listings')

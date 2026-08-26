@@ -1,0 +1,259 @@
+import { resolveCategoryId } from '@/lib/ebay/categories'
+import { ebayFetch, EbayApiError, type EbayFetchOptions } from '@/lib/ebay/client'
+import {
+  ebayEnv,
+  listingPolicyIds,
+  marketplaceId,
+  merchantLocationKey,
+} from '@/lib/ebay/config'
+import { conditionDescription, mapCondition } from '@/lib/ebay/conditions'
+import type {
+  CreatedListing,
+  ListingContext,
+  PlatformAdapter,
+} from '@/lib/platforms/adapter'
+import type { Inventory, Platform } from '@/lib/types'
+
+/**
+ * Real eBay integration, over the Sell Inventory API.
+ *
+ * The publish path is three calls, because eBay separates the *what* from
+ * the *where it is sold*:
+ *
+ *   PUT  /inventory_item/{sku}   the garment - title, photos, condition
+ *   POST /offer                  price, category, policies, quantity
+ *   POST /offer/{id}/publish     makes it live, returns the item number
+ *
+ * We key everything off a deterministic SKU derived from our inventory id,
+ * which makes the whole flow idempotent: re-running a crosspost replaces
+ * the inventory item and updates the existing offer rather than creating a
+ * duplicate listing.
+ *
+ * `platformListingId` stores the OFFER id, not the public item number,
+ * because the offer is what withdraw/republish operate on. The item number
+ * only appears in platform_url.
+ */
+
+const CURRENCY = () => process.env.EBAY_CURRENCY ?? 'USD'
+
+/** eBay SKUs allow up to 50 chars; our uuid fits comfortably. */
+export function skuFor(item: Pick<Inventory, 'id'>): string {
+  return `ankrevibe-${item.id}`
+}
+
+function itemUrl(listingId: string): string {
+  return ebayEnv() === 'sandbox'
+    ? `https://sandbox.ebay.com/itm/${listingId}`
+    : `https://www.ebay.com/itm/${listingId}`
+}
+
+/** eBay item specifics. Only non-empty values are sent. */
+export function buildAspects(item: Inventory): Record<string, string[]> {
+  const aspects: Record<string, string[]> = {}
+  const add = (name: string, value: string | null | undefined) => {
+    const trimmed = value?.trim()
+    if (trimmed) aspects[name] = [trimmed]
+  }
+  add('Brand', item.brand)
+  add('Size', item.size)
+  add('Color', item.color)
+  add('Style', item.style_era)
+  add('Department', item.subcategory)
+  return aspects
+}
+
+export function buildDescription(item: Inventory): string {
+  const parts: string[] = []
+  if (item.description?.trim()) parts.push(item.description.trim())
+
+  if (item.measurements && typeof item.measurements === 'object') {
+    const rows = Object.entries(item.measurements as Record<string, unknown>)
+      .filter(([, v]) => v !== null && v !== undefined && v !== '')
+      .map(([k, v]) => `<li>${k}: ${String(v)}</li>`)
+    if (rows.length) {
+      parts.push(`<p><strong>Measurements</strong></p><ul>${rows.join('')}</ul>`)
+    }
+  }
+
+  if (item.flaw_notes?.trim()) {
+    parts.push(`<p><strong>Condition notes:</strong> ${item.flaw_notes.trim()}</p>`)
+  }
+
+  // eBay requires a non-empty description.
+  return parts.join('\n') || item.title?.trim() || 'See photos.'
+}
+
+export class EbayAdapter implements PlatformAdapter {
+  readonly platform: Platform = 'ebay'
+
+  /** Injected in tests so no request leaves the process. */
+  constructor(private fetchOptions: EbayFetchOptions = {}) {}
+
+  private opts(extra: EbayFetchOptions = {}): EbayFetchOptions {
+    return { ...this.fetchOptions, ...extra }
+  }
+
+  // ---------------------------------------------------------------- create
+
+  async createListing(context: ListingContext): Promise<CreatedListing> {
+    const { item, photos, price } = context
+
+    if (price === null || price === undefined) {
+      throw new Error(`Cannot list ${item.id} on eBay: no ebay_price set.`)
+    }
+    if (photos.length === 0) {
+      throw new Error(`Cannot list ${item.id} on eBay: at least one photo is required.`)
+    }
+
+    const sku = skuFor(item)
+    await this.putInventoryItem(sku, context)
+
+    const offerId = await this.findOrCreateOffer(sku, context)
+    const listingId = await this.publishOffer(offerId)
+
+    return { platformListingId: offerId, platformUrl: itemUrl(listingId) }
+  }
+
+  /** Idempotent by design - PUT replaces whatever is there. */
+  private async putInventoryItem(sku: string, context: ListingContext) {
+    const { item, photos } = context
+
+    const imageUrls = [...photos]
+      .sort((a, b) => (a.position ?? 0) - (b.position ?? 0))
+      .map((p) => p.url)
+      .slice(0, 24) // eBay's per-listing image cap
+
+    await ebayFetch(
+      `/sell/inventory/v1/inventory_item/${encodeURIComponent(sku)}`,
+      this.opts({
+        method: 'PUT',
+        // Required on inventory item writes; eBay 400s without it.
+        headers: { 'Content-Language': 'en-US' },
+        body: {
+          availability: {
+            shipToLocationAvailability: { quantity: 1 },
+          },
+          condition: mapCondition(item.condition),
+          conditionDescription: conditionDescription(
+            item.condition,
+            item.flaw_notes,
+          ),
+          product: {
+            title: (item.title ?? 'Untitled').slice(0, 80), // eBay title cap
+            description: buildDescription(item),
+            brand: item.brand ?? undefined,
+            aspects: buildAspects(item),
+            imageUrls,
+          },
+        },
+      }),
+    )
+  }
+
+  private async findOfferId(sku: string): Promise<string | null> {
+    try {
+      const result = await ebayFetch<{ offers?: Array<{ offerId?: string }> }>(
+        `/sell/inventory/v1/offer?sku=${encodeURIComponent(sku)}` +
+          `&marketplace_id=${marketplaceId()}`,
+        this.opts(),
+      )
+      return result?.offers?.[0]?.offerId ?? null
+    } catch (cause) {
+      // No offer yet is a 404 here, not an error condition.
+      if (cause instanceof EbayApiError && cause.isNotFound) return null
+      throw cause
+    }
+  }
+
+  private async findOrCreateOffer(
+    sku: string,
+    context: ListingContext,
+  ): Promise<string> {
+    const { item, price } = context
+    const category = await resolveCategoryId(item, this.opts())
+
+    const payload = {
+      sku,
+      marketplaceId: marketplaceId(),
+      format: 'FIXED_PRICE',
+      availableQuantity: 1,
+      categoryId: category.categoryId,
+      listingDescription: buildDescription(item),
+      listingPolicies: listingPolicyIds(),
+      merchantLocationKey: merchantLocationKey(),
+      pricingSummary: {
+        price: { value: String(price), currency: CURRENCY() },
+      },
+    }
+
+    const existing = await this.findOfferId(sku)
+
+    if (existing) {
+      await ebayFetch(
+        `/sell/inventory/v1/offer/${existing}`,
+        this.opts({ method: 'PUT', body: payload }),
+      )
+      return existing
+    }
+
+    const created = await ebayFetch<{ offerId?: string }>(
+      '/sell/inventory/v1/offer',
+      this.opts({ method: 'POST', body: payload }),
+    )
+
+    if (!created?.offerId) {
+      throw new Error(`eBay created an offer for ${sku} but returned no offerId`)
+    }
+    return created.offerId
+  }
+
+  private async publishOffer(offerId: string): Promise<string> {
+    const published = await ebayFetch<{ listingId?: string }>(
+      `/sell/inventory/v1/offer/${offerId}/publish`,
+      this.opts({ method: 'POST' }),
+    )
+    if (!published?.listingId) {
+      throw new Error(`eBay published offer ${offerId} but returned no listingId`)
+    }
+    return published.listingId
+  }
+
+  // ---------------------------------------------------------------- delist
+
+  /**
+   * Withdraw the offer, ending the live listing but keeping the offer and
+   * inventory item so a relist is a republish rather than a rebuild.
+   *
+   * Idempotent: a 404, or eBay's "offer is not published" (25002), both
+   * mean the listing is already down, which is the desired end state.
+   */
+  async delist(platformListingId: string | null): Promise<void> {
+    if (!platformListingId) return
+
+    try {
+      await ebayFetch(
+        `/sell/inventory/v1/offer/${platformListingId}/withdraw`,
+        this.opts({ method: 'POST' }),
+      )
+    } catch (cause) {
+      if (cause instanceof EbayApiError) {
+        if (cause.isNotFound) return
+        // 25002: offer not published / already ended.
+        if (cause.errors.some((e) => e.errorId === 25002)) return
+      }
+      throw cause
+    }
+  }
+
+  // ---------------------------------------------------------------- relist
+
+  async relist(
+    platformListingId: string | null,
+    context: ListingContext,
+  ): Promise<CreatedListing> {
+    // Rebuilding from the SKU covers both cases - an offer we withdrew and
+    // one that never existed - and picks up any price or photo edits made
+    // since the original listing.
+    return this.createListing(context)
+  }
+}

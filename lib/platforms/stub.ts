@@ -1,29 +1,30 @@
-import type { PlatformAdapter, CreatedListing } from '@/lib/platforms/adapter'
-import type { Inventory, Platform } from '@/lib/types'
+import type {
+  CreatedListing,
+  ListingContext,
+  PlatformAdapter,
+} from '@/lib/platforms/adapter'
+import type { Platform } from '@/lib/types'
 
 /**
  * Placeholder adapter.
  *
- * eBay is the only one of the four with a public listing API; Poshmark,
- * Depop and Mercari have no official write API, so those will ultimately
- * need a browser-automation worker. Until credentials and that worker
- * exist, every platform runs through this stub: it produces deterministic
- * fake ids and URLs so the full operational loop - crosspost, sell,
- * auto-delist, relist, health check - is exercisable end to end against
- * real database state.
+ * Poshmark, Depop and Mercari have no official write API, so those will
+ * ultimately need a browser-automation worker. Until that exists they run
+ * through this stub: it produces deterministic fake ids and URLs so the
+ * full operational loop - crosspost, sell, auto-delist, relist, health
+ * check - is exercisable end to end against real database state.
+ *
+ * eBay no longer uses this; see lib/platforms/ebay.ts.
  */
 export class StubAdapter implements PlatformAdapter {
   constructor(public platform: Platform) {}
 
-  private id(item: Inventory) {
-    return `stub-${this.platform}-${item.id.slice(0, 8)}`
+  private id(context: ListingContext) {
+    return `stub-${this.platform}-${context.item.id.slice(0, 8)}`
   }
 
-  async createListing(
-    item: Inventory,
-    _price: number | null,
-  ): Promise<CreatedListing> {
-    const platformListingId = this.id(item)
+  async createListing(context: ListingContext): Promise<CreatedListing> {
+    const platformListingId = this.id(context)
     return {
       platformListingId,
       platformUrl: `https://example.invalid/${this.platform}/${platformListingId}`,
@@ -36,9 +37,8 @@ export class StubAdapter implements PlatformAdapter {
 
   async relist(
     _platformListingId: string | null,
-    item: Inventory,
-    price: number | null,
+    context: ListingContext,
   ): Promise<CreatedListing> {
-    return this.createListing(item, price)
+    return this.createListing(context)
   }
 }
