@@ -60,33 +60,32 @@
   ];
 
   /**
-   * Category selectors - OBSERVED on the live create-listing page, unlike
-   * most selectors in this extension.
+   * Category picker - OBSERVED on the live create-listing page.
    *
-   * These are Vue components, not native <select>: setNativeValue does
-   * nothing to them, so they are driven by lib/dropdown.js clicking them
-   * open and clicking an option.
+   * It is a single nested text list, not three separate dropdowns: opening
+   * it shows departments, clicking one replaces the list with that
+   * department's categories, and clicking a category replaces it again with
+   * subcategories. So the container is opened ONCE and navigated, which is
+   * what lib/dropdown.js selectNestedPath does.
    *
-   * The department control is the one tier NOT confirmed. Poshmark's
-   * category is three tiers (Department > Category > Subcategory) and only
-   * the latter two containers were observed, so the department selector is
-   * guessed from the same naming convention and reported if it misses.
+   * The tree is never hardcoded here - whatever path lib/crosslist computes
+   * is what gets clicked through.
    */
   const SEL_CATEGORY_CONTAINER = [
-    'div.listing-editor__category-container',
+    "div.listing-editor__category-container",
     '[class*="listing-editor__category-container"]',
   ];
 
+  /**
+   * Subcategory has its own container on the page. Some builds finish all
+   * three levels inside the first panel; others hand the last level to this
+   * one. Both are handled: if the nested walk consumes the whole path we are
+   * done, and if it stops with one level left this is tried for the
+   * remainder.
+   */
   const SEL_SUBCATEGORY_CONTAINER = [
-    'div.listing-editor__subcategory-container',
+    "div.listing-editor__subcategory-container",
     '[class*="listing-editor__subcategory-container"]',
-  ];
-
-  /** UNVERIFIED - inferred from the two confirmed container names. */
-  const SEL_DEPARTMENT_CONTAINER = [
-    'div.listing-editor__department-container',
-    '[class*="listing-editor__department-container"]',
-    '[class*="listing-editor__dept"]',
   ];
 
   function firstContainer(selectors) {
@@ -98,45 +97,46 @@
   }
 
   /**
-   * Fill Department > Category > Subcategory.
+   * Click through Department > Category > Subcategory.
    *
-   * Order matters and the steps are dependent: Poshmark repopulates the
-   * category list from the chosen department, so a failed department step
-   * makes the rest meaningless. It stops at the first failure rather than
-   * pressing on into a half-set category, which would list the item
-   * somewhere arbitrary.
+   * Stops at the first failed level rather than pressing on. Each level's
+   * list is generated from the one above, so continuing past a miss selects
+   * an arbitrary category rather than an incomplete one - and an item filed
+   * somewhere wrong looks correctly listed.
    */
   async function fillCategory(path) {
     if (!Array.isArray(path) || path.length < 2) {
       return { ok: false, reason: "no-mapping" };
     }
 
-    const steps = [
-      { name: "department", selectors: SEL_DEPARTMENT_CONTAINER, value: path[0] },
-      { name: "category", selectors: SEL_CATEGORY_CONTAINER, value: path[1] },
-      { name: "subcategory", selectors: SEL_SUBCATEGORY_CONTAINER, value: path[2] },
-    ];
-
-    const done = [];
-    for (const step of steps) {
-      if (step.value == null) continue;
-
-      const container = firstContainer(step.selectors);
-      if (!container) {
-        return { ok: false, reason: "no-container", step: step.name, done };
-      }
-
-      const result = await globalThis.AnkDropdown.selectFromDropdown(
-        container,
-        step.value,
-      );
-      if (!result.ok) {
-        return { ok: false, step: step.name, wanted: step.value, ...result, done };
-      }
-      done.push(`${step.name}=${result.matched}`);
+    const container = firstContainer(SEL_CATEGORY_CONTAINER);
+    if (!container) {
+      return { ok: false, reason: "no-container", step: "category" };
     }
 
-    return { ok: true, done };
+    const result = await globalThis.AnkDropdown.selectNestedPath(container, path);
+    if (result.ok) return result;
+
+    // The nested walk got partway and the list stopped advancing - the build
+    // that splits the final level into its own field. Finish there.
+    const consumed = result.trace ? result.trace.length : 0;
+    const remaining = path.slice(consumed);
+
+    if (consumed > 0 && remaining.length > 0) {
+      const subContainer = firstContainer(SEL_SUBCATEGORY_CONTAINER);
+      if (subContainer) {
+        const tail = await globalThis.AnkDropdown.selectNestedPath(
+          subContainer,
+          remaining,
+        );
+        if (tail.ok) {
+          return { ok: true, trace: [...(result.trace || []), ...tail.trace] };
+        }
+        return { ...tail, reason: tail.reason, viaSubcategoryField: true };
+      }
+    }
+
+    return result;
   }
 
   const SEL_BRAND = [

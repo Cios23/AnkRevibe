@@ -18,11 +18,13 @@ type Choice = {
 }
 
 let chooseOption: (optionTexts: string[], wanted: string) => Choice
+let rowSignature: (rows: Array<{ text: string }>) => string
 
 before(() => {
   const source = readFileSync('extension/lib/dropdown.js', 'utf8')
   new Function(source).call(globalThis)
   chooseOption = (globalThis as any).AnkDropdown.chooseOption
+  rowSignature = (globalThis as any).AnkDropdown.rowSignature
 })
 
 describe('chooseOption', () => {
@@ -143,5 +145,55 @@ describe('generated category map', () => {
     assert.equal(lookup('poshmark', 'Nonsense:Path', 'Men'), null)
     assert.equal(lookup('poshmark', null, null), null)
     assert.equal(lookup('nosuchplatform', 'x', 'y'), null)
+  })
+})
+
+
+describe('rowSignature (nested-navigation safety)', () => {
+  test('distinguishes one level of the tree from the next', () => {
+    // The picker replaces the list in place, so the ONLY way to know a click
+    // advanced is that the visible rows changed.
+    const departments = [{ text: 'Women' }, { text: 'Men' }, { text: 'Kids' }]
+    const categories = [{ text: 'Bags' }, { text: 'Dresses' }, { text: 'Accessories' }]
+    assert.notEqual(rowSignature(departments), rowSignature(categories))
+  })
+
+  test('is stable for the same list', () => {
+    const rows = [{ text: 'Women' }, { text: 'Men' }]
+    assert.equal(rowSignature(rows), rowSignature([...rows]))
+  })
+
+  test('ignores case and surrounding whitespace', () => {
+    assert.equal(
+      rowSignature([{ text: '  Women ' }]),
+      rowSignature([{ text: 'women' }]),
+    )
+  })
+
+  test('a repeated name across departments is NOT a distinct list', () => {
+    // "Accessories" exists under both Women and Men. If the code matched
+    // before the list re-rendered it would click a plausible wrong row, so
+    // the signature must treat identical rows as identical.
+    const womensCategories = [{ text: 'Bags' }, { text: 'Accessories' }]
+    const sameAgain = [{ text: 'Bags' }, { text: 'Accessories' }]
+    assert.equal(rowSignature(womensCategories), rowSignature(sameAgain))
+  })
+})
+
+describe('navigating a real Poshmark path', () => {
+  test('each level of a mapped path resolves against its own list', () => {
+    // Mirrors the confirmed structure: departments -> categories ->
+    // subcategories, matched by visible text at each level.
+    const path = ['Women', 'Accessories', 'Belts']
+    const levels = [
+      ['Women', 'Men', 'Girls', 'Boys'],
+      ['Bags', 'Dresses', 'Accessories', 'Tops'],
+      ['Belts', 'Hair Accessories', 'Scarves & Wraps'],
+    ]
+    path.forEach((wanted, i) => {
+      const choice = chooseOption(levels[i], wanted)
+      assert.ok(choice.index >= 0, `level ${i} failed to match "${wanted}"`)
+      assert.equal(levels[i][choice.index], wanted)
+    })
   })
 })
