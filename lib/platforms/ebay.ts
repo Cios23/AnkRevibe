@@ -12,6 +12,7 @@ import {
 } from '@/lib/ebay/conditions'
 import type {
   CreatedListing,
+  DelistOutcome,
   ListingContext,
   PlatformAdapter,
 } from '@/lib/platforms/adapter'
@@ -301,19 +302,19 @@ export class EbayAdapter implements PlatformAdapter {
    * Idempotent: a 404, or eBay's "offer is not published" (25002), both
    * mean the listing is already down, which is the desired end state.
    */
-  async delist(platformListingId: string | null): Promise<void> {
-    if (!platformListingId) return
+  async delist(platformListingId: string | null): Promise<DelistOutcome> {
+    if (!platformListingId) return 'delisted'
 
     try {
       await ebayFetch(
         `/sell/inventory/v1/offer/${platformListingId}/withdraw`,
         this.opts({ method: 'POST' }),
       )
-      return
+      return 'delisted'
     } catch (cause) {
       if (cause instanceof EbayApiError) {
         // 25002: offer exists but is not published - already down.
-        if (cause.errors.some((e) => e.errorId === 25002)) return
+        if (cause.errors.some((e) => e.errorId === 25002)) return 'delisted'
 
         // No such offer. This is the normal case for a listing IMPORTED
         // from the account rather than published by us: it is a legacy
@@ -321,7 +322,7 @@ export class EbayAdapter implements PlatformAdapter {
         // here would silently leave it live, so fall through to EndItem.
         if (cause.isNotFound || cause.errors.some((e) => e.errorId === 25713)) {
           await this.endLegacyListing(platformListingId)
-          return
+          return 'delisted'
         }
       }
       throw cause

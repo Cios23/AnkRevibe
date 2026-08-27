@@ -1,5 +1,19 @@
 import type { Inventory, ListingPhoto, Platform } from '@/lib/types'
 
+/**
+ * What actually happened when we asked a platform to take a listing down.
+ *
+ * Not every platform can be delisted from a server. Depop has no API for it,
+ * so the work has to happen in the browser extension - the server can only
+ * record the intent. Reporting that as 'delisted' would state, in our own
+ * records, that a listing is down while it is still live and sellable.
+ */
+export type DelistOutcome =
+  /** The listing is down now. */
+  | 'delisted'
+  /** Handed to the extension; still live until it runs. */
+  | 'queued'
+
 export type CreatedListing = {
   /**
    * The handle we need to later delist or relist. Per-platform this is
@@ -41,8 +55,14 @@ export type ListingContext = {
 export interface PlatformAdapter {
   platform: Platform
   createListing(context: ListingContext): Promise<CreatedListing>
-  /** Must be idempotent: delisting something already gone is not an error. */
-  delist(platformListingId: string | null): Promise<void>
+  /**
+   * Take the listing down.
+   *
+   * Must be idempotent - delisting something already gone is not an error -
+   * and must report 'queued' rather than 'delisted' if the work has only
+   * been scheduled.
+   */
+  delist(platformListingId: string | null): Promise<DelistOutcome>
   relist(
     platformListingId: string | null,
     context: ListingContext,

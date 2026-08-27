@@ -80,6 +80,16 @@
         "content-scripts/depop.js"
       ],
       "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://www.depop.com/products/*"
+      ],
+      "js": [
+        "lib/labels.js",
+        "automation/depop-delist.js"
+      ],
+      "run_at": "document_idle"
     }
   ]
 }

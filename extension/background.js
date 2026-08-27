@@ -66,6 +66,7 @@ chrome.runtime.onInstalled.addListener(() => {
       chrome.alarms.create("send-offers", { periodInMinutes: 720 });
       chrome.alarms.create("check-offers", { periodInMinutes: 60 });
       chrome.alarms.create("depop-relist", { periodInMinutes: 1440 });
+      chrome.alarms.create("depop-delist-queue", { periodInMinutes: 30 });
     } catch {
       /* alarms unavailable */
     }
@@ -77,6 +78,7 @@ chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === "send-offers") return void onOffersAlarm();
   if (alarm.name === "check-offers") return void onCheckOffersAlarm();
   if (alarm.name === "depop-relist") return void doDepopRelist(false);
+  if (alarm.name === "depop-delist-queue") return void drainDepopDelistQueue();
 });
 
 const POSHMARK_PATTERNS = ["https://poshmark.com/*", "https://*.poshmark.com/*"];
@@ -264,6 +266,91 @@ async function doDepopRelist(skipDailyGate) {
   }
 }
 
+// ------------------------------------------------------ depop delist queue
+
+let delistQueueRunning = false;
+
+/**
+ * Take down Depop listings the server has flagged.
+ *
+ * Depop has no delist API, so recordSale can only mark the row
+ * `pending_delist`; the listing stays live until this runs. Each row gets
+ * its own background tab, the content script drives the UI, and the row is
+ * updated from what the script actually observed.
+ */
+async function drainDepopDelistQueue() {
+  if (delistQueueRunning) return;
+  delistQueueRunning = true;
+
+  const summary = { attempted: 0, delisted: 0, failed: 0, reasons: [] };
+
+  try {
+    const token = await readToken();
+    if (!token) return;
+
+    const pending = await globalThis.AnkSync.fetchPendingDelists(token, "depop");
+    if (!pending.length) return;
+
+    for (const row of pending) {
+      if (!row.platform_url) {
+        summary.failed++;
+        summary.reasons.push("no listing url");
+        await globalThis.AnkSync.recordDelistResult(token, row.id, false);
+        continue;
+      }
+
+      summary.attempted++;
+      const result = await delistOneDepopListing(row.platform_url);
+
+      if (result?.ok) {
+        summary.delisted++;
+      } else {
+        summary.failed++;
+        summary.reasons.push(result?.reason || "unknown");
+        // Keep what the page actually offered - this is what turns an
+        // unverified selector guess into a one-line fix.
+        if (result?.found) {
+          chrome.storage.local.set({ depop_delist_last_page_controls: result.found });
+        }
+      }
+
+      await globalThis.AnkSync.recordDelistResult(token, row.id, Boolean(result?.ok));
+      await new Promise((r) => setTimeout(r, 2500));
+    }
+  } finally {
+    delistQueueRunning = false;
+    chrome.storage.local.set({
+      depop_delist_last_run: new Date().toISOString(),
+      depop_delist_last_summary: summary,
+    });
+  }
+}
+
+/** Open one listing, ask the content script to end it, close the tab. */
+function delistOneDepopListing(listingUrl) {
+  return new Promise((resolve) => {
+    chrome.tabs.create({ url: listingUrl, active: false }, (tab) => {
+      if (chrome.runtime.lastError || !tab?.id) {
+        resolve({ ok: false, reason: "tab-failed" });
+        return;
+      }
+      const tabId = tab.id;
+      // Give the SPA time to render before the script looks for controls.
+      setTimeout(() => {
+        chrome.tabs.sendMessage(tabId, { type: "DEPOP_DELIST" }, (response) => {
+          const err = chrome.runtime.lastError;
+          try {
+            chrome.tabs.remove(tabId);
+          } catch {
+            /* already closed */
+          }
+          resolve(err ? { ok: false, reason: "no-content-script" } : response);
+        });
+      }, 4000);
+    });
+  });
+}
+
 // ---------------------------------------------------------------- messages
 
 function notifyFillWithRetry(tabId, listing, attempt = 0) {
@@ -299,6 +386,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       .then((dataUrl) => sendResponse({ dataUrl }))
       .catch((err) => sendResponse({ error: String(err) }));
     return true;
+  }
+
+  if (message?.type === "MANUAL_DEPOP_DELIST") {
+    void drainDepopDelistQueue();
+    sendResponse({ ok: true });
+    return false;
   }
 
   if (message?.type === "MANUAL_DEPOP_RELIST") {

@@ -1,5 +1,6 @@
 import type {
   CreatedListing,
+  DelistOutcome,
   ListingContext,
   PlatformAdapter,
 } from '@/lib/platforms/adapter'
@@ -31,8 +32,10 @@ export class StubAdapter implements PlatformAdapter {
     }
   }
 
-  async delist(_platformListingId: string | null): Promise<void> {
-    // No-op until a real integration exists.
+  async delist(_platformListingId: string | null): Promise<DelistOutcome> {
+    // No-op until a real integration exists. Reported as done because the
+    // stub never created a real listing to take down.
+    return 'delisted'
   }
 
   async relist(

@@ -39,6 +39,7 @@ class RecordingAdapter implements PlatformAdapter {
   async delist(platformListingId: string | null) {
     this.guard('delist')
     this.calls.push({ method: 'delist', args: [platformListingId] })
+    return 'delisted' as const
   }
 
   async relist(platformListingId: string | null, context: ListingContext) {
@@ -498,5 +499,88 @@ describe('recordSale computes profit', () => {
     assert.equal(result.platformFee, null)
     assert.equal(db.table('orders').length, 1, 'the sale is still recorded')
     assert.equal(db.table('inventory')[0].status, 'sold')
+  })
+})
+
+// ------------------------------------------------- queued (Depop) delists
+
+describe('recordSale with a platform that cannot delist server-side', () => {
+  /** Adapter that reports a delist as queued rather than done. */
+  function queuedAdapters() {
+    const { registry, getAdapter } = makeAdapters()
+    const queued = { ...registry.depop } as never
+    return {
+      registry,
+      getAdapter: (p: Platform) =>
+        p === 'depop'
+          ? ({
+              platform: 'depop',
+              createListing: async () => ({
+                platformListingId: 'x',
+                platformUrl: 'https://x.invalid',
+              }),
+              delist: async () => 'queued',
+              relist: async () => ({
+                platformListingId: 'x',
+                platformUrl: 'https://x.invalid',
+              }),
+            } as never)
+          : getAdapter(p),
+      queued,
+    }
+  }
+
+  test('marks the row pending_delist, NOT delisted', async () => {
+    // Recording it as delisted would tell the sync-failure detector there is
+    // nothing to look for, on a listing that is still live and sellable.
+    const db = seedCrossposted()
+    const { getAdapter } = queuedAdapters()
+
+    const result = await recordSale(asClient(db), 'item-1', 'ebay', 78, null, {
+      getAdapter,
+    })
+
+    const depopRow = db
+      .table('platform_listings')
+      .find((l) => l.platform === 'depop')
+    assert.equal(depopRow.status, 'pending_delist')
+
+    const reported = result.delisted.find((d) => d.platform === 'depop')
+    assert.equal(reported?.status, 'pending_delist')
+  })
+
+  test('leaves delisted_at unset while the listing is still up', async () => {
+    const db = seedCrossposted()
+    const { getAdapter } = queuedAdapters()
+    await recordSale(asClient(db), 'item-1', 'ebay', 78, null, { getAdapter })
+
+    const depopRow = db
+      .table('platform_listings')
+      .find((l) => l.platform === 'depop')
+    assert.equal(
+      depopRow.delisted_at,
+      null,
+      'a delist timestamp would imply it already came down',
+    )
+  })
+
+  test('a queued platform does not hold up the ones that did delist', async () => {
+    const db = seedCrossposted()
+    const { getAdapter } = queuedAdapters()
+    await recordSale(asClient(db), 'item-1', 'ebay', 78, null, { getAdapter })
+
+    const posh = db
+      .table('platform_listings')
+      .find((l) => l.platform === 'poshmark')
+    assert.equal(posh.status, 'delisted')
+    assert.ok(posh.delisted_at)
+  })
+
+  test('the sale itself is unaffected', async () => {
+    const db = seedCrossposted()
+    const { getAdapter } = queuedAdapters()
+    await recordSale(asClient(db), 'item-1', 'ebay', 78, null, { getAdapter })
+    assert.equal(db.table('inventory')[0].status, 'sold')
+    assert.equal(db.table('orders').length, 1)
   })
 })

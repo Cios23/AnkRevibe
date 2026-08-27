@@ -9,7 +9,7 @@
     "lint": "next lint",
     "test:phash": "tsx scripts/phash.test.mts",
     "ebay:policies": "tsx scripts/ebay-policies.mts",
-    "test": "tsx --conditions=react-server --test --experimental-test-module-mocks test/health.test.mts test/operations.test.mts test/routes.test.mts test/ebay.test.mts test/ebay-oauth.test.mts test/margin.test.mts test/auth-bridge.test.mts test/fees.test.mts test/crosslist.test.mts",
+    "test": "tsx --conditions=react-server --test --experimental-test-module-mocks test/health.test.mts test/operations.test.mts test/routes.test.mts test/ebay.test.mts test/ebay-oauth.test.mts test/margin.test.mts test/auth-bridge.test.mts test/fees.test.mts test/crosslist.test.mts test/depop-delist.test.mts",
     "ebay:auth": "tsx scripts/ebay-auth.mts",
     "ebay:categories": "tsx scripts/ebay-categories.mts",
     "ebay:locations": "tsx scripts/ebay-locations.mts",

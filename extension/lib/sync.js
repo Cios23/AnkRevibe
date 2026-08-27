@@ -135,5 +135,61 @@
     }
   }
 
-  globalThis.AnkSync = { saveCrosspost, markInventoryActive, fetchPoshmarkCostMap };
+  /**
+   * Listings the server has asked to be taken down but cannot take down
+   * itself.
+   *
+   * recordSale marks Depop rows `pending_delist` rather than `delisted`,
+   * precisely because the server cannot do the work. This is the queue.
+   */
+  async function fetchPendingDelists(token, platform) {
+    if (!token) return [];
+    const url =
+      cfg().SUPABASE_URL +
+      "/rest/v1/platform_listings" +
+      "?select=id,platform_listing_id,platform_url,inventory_id" +
+      "&platform=eq." + encodeURIComponent(platform) +
+      "&status=eq.pending_delist&limit=100";
+    try {
+      const res = await fetch(url, { headers: headers(token) });
+      if (!res.ok) return [];
+      return await res.json();
+    } catch {
+      return [];
+    }
+  }
+
+  /**
+   * Record the outcome of a delist attempt.
+   *
+   * `delisted` is written ONLY when the extension observed the listing come
+   * down. A failed attempt goes to `error`, never back to `pending_delist`,
+   * so a broken selector cannot spin forever reopening the same tab.
+   */
+  async function recordDelistResult(token, rowId, success) {
+    if (!token || !rowId) return { ok: false };
+    const url =
+      cfg().SUPABASE_URL + "/rest/v1/platform_listings?id=eq." + encodeURIComponent(rowId);
+    const patch = success
+      ? { status: "delisted", delisted_at: new Date().toISOString() }
+      : { status: "error" };
+    try {
+      const res = await fetch(url, {
+        method: "PATCH",
+        headers: headers(token),
+        body: JSON.stringify(patch),
+      });
+      return { ok: res.ok };
+    } catch {
+      return { ok: false };
+    }
+  }
+
+  globalThis.AnkSync = {
+    saveCrosspost,
+    markInventoryActive,
+    fetchPoshmarkCostMap,
+    fetchPendingDelists,
+    recordDelistResult,
+  };
 })();

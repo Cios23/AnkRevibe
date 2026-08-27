@@ -5,7 +5,7 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import { computeProfit } from '@/lib/fees'
 import { getAdapter as defaultGetAdapter } from '@/lib/platforms'
 import type { PlatformAdapter } from '@/lib/platforms/adapter'
-import type { ListingContext } from '@/lib/platforms/adapter'
+import type { DelistOutcome, ListingContext } from '@/lib/platforms/adapter'
 import type { Database, Inventory, ListingPhoto, Platform } from '@/lib/types'
 
 type Client = SupabaseClient<Database>
@@ -164,7 +164,11 @@ export type SaleResult = {
   /** null when purchase_cost is unknown - never guessed. */
   profit: number | null
   platformFee: number | null
-  delisted: Array<{ platform: string; status: 'delisted' | 'error'; error?: string }>
+  delisted: Array<{
+    platform: string
+    status: 'delisted' | 'pending_delist' | 'error'
+    error?: string
+  }>
 }
 
 /**
@@ -245,18 +249,31 @@ export async function recordSale(
 
   for (const listing of listings ?? []) {
     try {
+      // The selling platform closed its own listing.
+      let outcome: DelistOutcome = 'delisted'
       if (listing.platform !== soldPlatform) {
-        await getAdapter(listing.platform as Platform).delist(
+        outcome = await getAdapter(listing.platform as Platform).delist(
           listing.platform_listing_id,
         )
       }
+
+      // A queued delist is NOT a delist. Recording it as one would tell the
+      // sync-failure detector there is nothing to look for, on exactly the
+      // listings most likely to still be live.
+      //
+      // Status and timestamp come off ONE decision. Deriving them separately
+      // let an adapter returning nothing produce `delisted` with no
+      // delisted_at - a row that contradicts itself.
+      const queued = outcome === 'queued'
+      const status = queued ? 'pending_delist' : 'delisted'
+
       const { error } = await supabase
         .from('platform_listings')
-        .update({ status: 'delisted', delisted_at: soldAt })
+        .update({ status, delisted_at: queued ? null : soldAt })
         .eq('id', listing.id)
       if (error) throw new Error(error.message)
 
-      delisted.push({ platform: listing.platform, status: 'delisted' })
+      delisted.push({ platform: listing.platform, status })
     } catch (cause) {
       const message = cause instanceof Error ? cause.message : String(cause)
       await supabase

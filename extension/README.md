@@ -18,6 +18,7 @@ inherited unverified. See Assumptions.
 | Auto-share to followers | Poshmark | `automation/poshmark-share.js` |
 | Auto-offer to likers + auto-accept | Poshmark | `automation/offer-sender.js` |
 | Daily relist | Depop | `background.js` → `doDepopRelist` |
+| **Delist on sale** | Depop | `automation/depop-delist.js` |
 
 eBay is **not** here — it goes through the Sell API server-side
 (`lib/platforms/ebay.ts`). Mercari and Facebook were dropped with the rest of
@@ -141,7 +142,30 @@ multi-selector fallback lists to soften that.
 `http://localhost:3000`. Add the production origin to `host_permissions`, the
 bridge's `matches`, and `CONFIG.APP_ORIGINS` when the app is deployed.
 
-**11. No icons.** `manifest.json` omits `action.default_icon` rather than
+**11. Depop delist selectors are guesses, and marked as such.** Depop has no
+API for sellers, so ending a listing means driving their UI - and Depop
+returns HTTP 403 to any scripted request, so their markup could not be
+inspected at all while writing it. The wordings tried ("Delete listing",
+"Remove", "End listing", "Mark as sold") are plausible, not observed.
+
+Two deliberate consequences:
+
+- It **never clicks an approximate match**. Matching is whole-word, so
+  "Deleted items" does not answer a search for "delete" - on a page of
+  destructive controls a loose match is how the wrong thing gets clicked.
+  If nothing matches it reports every control the page offered, which turns
+  one real run into a one-line fix.
+- It **never reports success it did not observe**. A failed attempt marks
+  the row `error`, never back to `pending_delist`, so a broken selector
+  cannot spin forever reopening the same tab.
+
+How it reaches the browser at all: the server cannot delist Depop, so
+`recordSale` marks the row **`pending_delist`** rather than `delisted` -
+claiming otherwise would tell the sync-failure detector there is nothing to
+look for, on a listing that is still live. `background.js` drains that queue
+on a 30-minute alarm, or on demand via `MANUAL_DEPOP_DELIST`.
+
+**12. No icons.** `manifest.json` omits `action.default_icon` rather than
 reference PNGs that don't exist. Chrome uses a default placeholder.
 
 ## Files

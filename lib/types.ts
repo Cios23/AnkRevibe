@@ -3,7 +3,16 @@ export type Platform = 'ebay' | 'poshmark' | 'depop' | 'mercari'
 export const PLATFORMS: Platform[] = ['ebay', 'poshmark', 'depop', 'mercari']
 
 export type InventoryStatus = 'draft' | 'active' | 'sold' | 'archived'
-export type PlatformListingStatus = 'active' | 'delisted' | 'error'
+/**
+ * `pending_delist` means we have asked for the listing to come down but it
+ * is still live: the platform has no server-side delist and the browser
+ * extension has not run yet.
+ */
+export type PlatformListingStatus =
+  | 'active'
+  | 'delisted'
+  | 'error'
+  | 'pending_delist'
 export type OrderStatus = 'pending' | 'shipped' | 'completed'
 export type HealthFlagStatus = 'open' | 'dismissed' | 'resolved'
 

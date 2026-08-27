@@ -1,4 +1,5 @@
 import type { PlatformAdapter } from '@/lib/platforms/adapter'
+import { DepopAdapter } from '@/lib/platforms/depop'
 import { EbayAdapter } from '@/lib/platforms/ebay'
 import { StubAdapter } from '@/lib/platforms/stub'
 import { PLATFORMS, type Platform } from '@/lib/types'
@@ -21,7 +22,12 @@ function ebayAdapter(): PlatformAdapter {
 const registry: Record<Platform, () => PlatformAdapter> = {
   ebay: ebayAdapter,
   poshmark: () => new StubAdapter('poshmark'),
-  depop: () => new StubAdapter('depop'),
+  // Depop cannot be delisted from a server; its adapter queues the work for
+  // the extension and reports 'queued' rather than claiming it is done.
+  depop: () =>
+    process.env.EBAY_USE_STUB === 'true'
+      ? new StubAdapter('depop')
+      : new DepopAdapter(),
   mercari: () => new StubAdapter('mercari'),
 }
 
