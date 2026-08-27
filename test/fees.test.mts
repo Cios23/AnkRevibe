@@ -9,7 +9,10 @@ import {
   formatRoi,
   partitionRankable,
   platformFee,
+  priceForNetProceeds,
+  equivalentPrice,
   PLATFORM_FEES,
+  PLATFORM_MIN_PRICE,
 } from '../lib/fees'
 import type { Platform } from '../lib/types'
 
@@ -238,5 +241,95 @@ describe('partitionRankable', () => {
       (a, b) => computeRoi(b.profit, b.cost)! - computeRoi(a.profit, a.cost)!,
     )
     assert.equal(byRoi[0].id, 'small-profit-high-roi')
+  })
+})
+
+// ------------------------------------------------- price derivation
+
+describe('priceForNetProceeds', () => {
+  test('inverts the percentage fee exactly', () => {
+    const price = priceForNetProceeds('depop', 90)!
+    assert.ok(Math.abs(price - platformFee('depop', price) - 90) < 0.01)
+  })
+
+  test('inverts eBay’s rate', () => {
+    const price = priceForNetProceeds('ebay', 86.75)!
+    assert.ok(Math.abs(price - 100) < 0.02)
+  })
+
+  test('picks the correct side of Poshmark’s threshold', () => {
+    // Below $15 the fee is flat, above it a percentage. Solving the wrong
+    // branch yields a price that silently nets the wrong amount.
+    const small = priceForNetProceeds('poshmark', 5)!
+    assert.ok(small < 15, 'a $5 net belongs on the flat side')
+    assert.ok(Math.abs(small - platformFee('poshmark', small) - 5) < 0.01)
+
+    const large = priceForNetProceeds('poshmark', 80)!
+    assert.ok(large >= 15, 'an $80 net belongs on the percentage side')
+    assert.ok(Math.abs(large - platformFee('poshmark', large) - 80) < 0.01)
+  })
+
+  test('never nets LESS than asked (rounds up)', () => {
+    for (const target of [3.33, 7.77, 19.99, 41.11]) {
+      for (const platform of ['ebay', 'poshmark', 'depop', 'mercari'] as Platform[]) {
+        const price = priceForNetProceeds(platform, target)!
+        const net = price - platformFee(platform, price)
+        assert.ok(
+          net >= target - 0.001,
+          `${platform} at target ${target} netted ${net.toFixed(2)}`,
+        )
+      }
+    }
+  })
+
+  test('respects each platform’s minimum listing price', () => {
+    // A price the platform rejects is worth less than one that over-nets.
+    const price = priceForNetProceeds('mercari', 0.5)!
+    assert.equal(price, PLATFORM_MIN_PRICE.mercari)
+  })
+
+  test('rejects a nonsense target', () => {
+    assert.equal(priceForNetProceeds('ebay', 0), null)
+    assert.equal(priceForNetProceeds('ebay', -5), null)
+    assert.equal(priceForNetProceeds('ebay', Number.NaN), null)
+  })
+})
+
+describe('equivalentPrice', () => {
+  test('matches net proceeds across platforms', () => {
+    const ebayPrice = 78
+    const ebayNet = ebayPrice - platformFee('ebay', ebayPrice)
+
+    for (const target of ['poshmark', 'depop', 'mercari'] as Platform[]) {
+      const price = equivalentPrice('ebay', ebayPrice, target)!
+      const net = price - platformFee(target, price)
+      assert.ok(
+        Math.abs(net - ebayNet) < 0.02,
+        `${target} netted ${net.toFixed(2)} vs eBay ${ebayNet.toFixed(2)}`,
+      )
+    }
+  })
+
+  test('Poshmark must be priced HIGHER than eBay for the same earnings', () => {
+    // 20% vs 13.25%. Copying the eBay number across is the intuitive move
+    // and quietly earns less for identical work.
+    const poshmark = equivalentPrice('ebay', 78, 'poshmark')!
+    assert.ok(poshmark > 78, `expected > 78, got ${poshmark}`)
+  })
+
+  test('Depop and Mercari are priced LOWER, taking only 10%', () => {
+    assert.ok(equivalentPrice('ebay', 78, 'depop')! < 78)
+    assert.ok(equivalentPrice('ebay', 78, 'mercari')! < 78)
+  })
+
+  test('is symmetric - round-tripping returns roughly the original', () => {
+    const poshmark = equivalentPrice('ebay', 100, 'poshmark')!
+    const back = equivalentPrice('poshmark', poshmark, 'ebay')!
+    assert.ok(Math.abs(back - 100) < 0.1, `round trip gave ${back}`)
+  })
+
+  test('a missing source price yields null, not a guess', () => {
+    assert.equal(equivalentPrice('ebay', null, 'depop'), null)
+    assert.equal(equivalentPrice('ebay', 0, 'depop'), null)
   })
 })

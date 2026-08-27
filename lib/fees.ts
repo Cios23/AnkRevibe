@@ -157,3 +157,84 @@ export function partitionRankable<T>(
   }
   return { rankable, unknown }
 }
+
+// ------------------------------------------------- price derivation
+
+/**
+ * Minimum listing price each platform enforces.
+ *
+ * ASSUMED, not verified against current policy: Poshmark $3, Mercari $5,
+ * Depop $1. A derived price below the floor is raised to it, which breaks
+ * net-parity for that item - deliberately, since a listing the platform
+ * rejects is worth less than one that nets slightly more.
+ */
+export const PLATFORM_MIN_PRICE: Record<Platform, number> = {
+  ebay: 0.99,
+  poshmark: 3,
+  depop: 1,
+  mercari: 5,
+}
+
+/**
+ * The listing price that nets `targetNet` after the platform's fee.
+ *
+ * The inverse of platformFee. For a percentage this is net / (1 - rate).
+ * Poshmark is tiered, so both branches are solved and the one whose answer
+ * actually lands in its own band is taken - solving the wrong branch gives
+ * a price that silently nets the wrong amount.
+ *
+ * Rounds UP to the cent, so the derived price never nets less than asked.
+ */
+export function priceForNetProceeds(
+  platform: Platform,
+  targetNet: number,
+): number | null {
+  if (!Number.isFinite(targetNet) || targetNet <= 0) return null
+  const model = PLATFORM_FEES[platform]
+  if (!model) return null
+
+  const ceilCents = (value: number) => Math.ceil(value * 100) / 100
+
+  let price: number
+  if (model.kind === 'percent') {
+    price = ceilCents(targetNet / (1 - model.rate))
+  } else {
+    // Below the threshold the fee is flat, above it a percentage. Solve both.
+    const flatBranch = ceilCents(targetNet + model.flatBelow)
+    const rateBranch = ceilCents(targetNet / (1 - model.rateAtOrAbove))
+
+    if (flatBranch < model.threshold) {
+      price = flatBranch
+    } else if (rateBranch >= model.threshold) {
+      price = rateBranch
+    } else {
+      // Neither branch is self-consistent: the target net sits in the gap
+      // around the threshold. The threshold itself is the cheapest price
+      // that clears it.
+      price = model.threshold
+    }
+  }
+
+  return Math.max(price, PLATFORM_MIN_PRICE[platform])
+}
+
+/**
+ * Price for `platform` that matches the net proceeds of `fromPrice` on
+ * `fromPlatform`.
+ *
+ * Equal sticker prices are NOT equal earnings: Poshmark takes 20% where
+ * eBay takes 13.25%, so listing the same number on both quietly earns less
+ * on Poshmark for identical work.
+ */
+export function equivalentPrice(
+  fromPlatform: Platform,
+  fromPrice: number | null | undefined,
+  toPlatform: Platform,
+): number | null {
+  if (fromPrice == null) return null
+  const price = Number(fromPrice)
+  if (!Number.isFinite(price) || price <= 0) return null
+
+  const net = price - platformFee(fromPlatform, price)
+  return priceForNetProceeds(toPlatform, net)
+}
