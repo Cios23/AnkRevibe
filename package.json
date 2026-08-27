@@ -22,7 +22,8 @@
     "prices:derive": "tsx scripts/derive-platform-prices.mts",
     "crosslist:generate-map": "tsx scripts/generate-category-map.mts",
     "poshmark:verify": "tsx scripts/verify-poshmark-categories.mts",
-    "ebay:shipping": "tsx scripts/ebay-shipping-policies.mts"
+    "ebay:shipping": "tsx scripts/ebay-shipping-policies.mts",
+    "ebay:apply-shipping": "tsx scripts/ebay-apply-shipping.mts"
   },
   "dependencies": {
     "@supabase/ssr": "^0.12.5",

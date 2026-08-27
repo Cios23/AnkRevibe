@@ -28,8 +28,14 @@ export type PolicyDefinition = {
   band: ShippingBand
   /** The policy id on the account. */
   id: string
-  /** eBay's own name, for matching against the live list. */
+  /**
+   * eBay's own name for the policy. Kept verbatim so the live list can be
+   * matched against it - NOT a source of truth for the price. "T Shirts/
+   * Shorts $5" actually charges $6; the name was never updated.
+   */
   label: string
+  /** The flat rate actually configured, read from the policy on 2026-08-27. */
+  costUsd: number
   envVar: string
 }
 
@@ -38,24 +44,29 @@ export const FULFILLMENT_POLICIES: Record<ShippingBand, PolicyDefinition> = {
     band: 'tshirts-shorts',
     id: '261742192018',
     label: 'T Shirts/Shorts $5',
+    // The NAME says $5. The policy charges $6.
+    costUsd: 6,
     envVar: 'EBAY_POLICY_TSHIRTS',
   },
   sweatshirts: {
     band: 'sweatshirts',
     id: '261742395018',
     label: 'Sweatshirts $8',
+    costUsd: 8,
     envVar: 'EBAY_POLICY_SWEATSHIRTS',
   },
   'light-coats-jeans': {
     band: 'light-coats-jeans',
     id: '261742420018',
     label: 'Lights Coats/Jeans $10',
+    costUsd: 10,
     envVar: 'EBAY_POLICY_LIGHT_COATS',
   },
   heavy: {
     band: 'heavy',
     id: '261742440018',
     label: 'Heavy Coat',
+    costUsd: 12.5,
     envVar: 'EBAY_POLICY_HEAVY',
   },
 }

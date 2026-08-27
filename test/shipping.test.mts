@@ -171,3 +171,37 @@ describe('every band is reachable', () => {
     )
   })
 })
+
+describe('policy costs are recorded from the live account', () => {
+  test('T Shirts/Shorts charges $6 despite being NAMED $5', () => {
+    // Read from the policy itself. The label was never updated, so trusting
+    // the name would have every t-shirt priced a dollar under what eBay
+    // actually charges.
+    assert.equal(FULFILLMENT_POLICIES['tshirts-shorts'].costUsd, 6)
+    assert.match(FULFILLMENT_POLICIES['tshirts-shorts'].label, /\$5/)
+  })
+
+  test('cost rises monotonically with band weight', () => {
+    // If a heavier band ever costs less, the banding is pointless.
+    const order: Array<keyof typeof FULFILLMENT_POLICIES> = [
+      'tshirts-shorts',
+      'sweatshirts',
+      'light-coats-jeans',
+      'heavy',
+    ]
+    for (let i = 1; i < order.length; i++) {
+      const lighter = FULFILLMENT_POLICIES[order[i - 1]].costUsd
+      const heavier = FULFILLMENT_POLICIES[order[i]].costUsd
+      assert.ok(
+        heavier > lighter,
+        `${order[i]} ($${heavier}) should cost more than ${order[i - 1]} ($${lighter})`,
+      )
+    }
+  })
+
+  test('every band has a real cost', () => {
+    for (const policy of Object.values(FULFILLMENT_POLICIES)) {
+      assert.ok(policy.costUsd > 0, `${policy.band} has no cost`)
+    }
+  })
+})
