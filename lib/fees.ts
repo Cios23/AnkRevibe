@@ -95,3 +95,65 @@ export function describeFee(platform: Platform): string {
     model.rateAtOrAbove * 100
   }%`
 }
+
+// ---------------------------------------------------------------- ROI
+
+/**
+ * Return on investment: profit divided by what the item cost.
+ *
+ * Deliberately returns null rather than a number in three cases, because a
+ * plausible-looking figure is worse than an absent one when ranking:
+ *
+ *   - no purchase_cost      we do not know the investment
+ *   - no profit             the item has not sold
+ *   - cost of zero          the ratio is undefined (free item, infinite
+ *                           return) and would sort above every real result
+ *
+ * A zero cost is still a REAL cost for profit purposes - only the ratio is
+ * undefined - so profit stays reportable while ROI does not.
+ */
+export function computeRoi(
+  profit: number | null | undefined,
+  purchaseCost: number | null | undefined,
+): number | null {
+  if (profit == null || purchaseCost == null) return null
+  const cost = Number(purchaseCost)
+  const gain = Number(profit)
+  if (!Number.isFinite(cost) || !Number.isFinite(gain)) return null
+  if (cost <= 0) return null
+  return gain / cost
+}
+
+export function formatRoi(roi: number | null): string {
+  if (roi === null) return '—'
+  return `${roi >= 0 ? '' : '−'}${Math.abs(roi * 100).toFixed(0)}%`
+}
+
+export type RankableSale = {
+  profit: number | null
+  purchaseCost: number | null
+  roi: number | null
+}
+
+/**
+ * Split sold items into those that can be ranked and those that cannot.
+ *
+ * Keeping them apart is the point: unknown-cost items are not zero-cost
+ * items, and mixing them into a sorted list silently misrepresents them.
+ */
+export function partitionRankable<T>(
+  items: T[],
+  read: (item: T) => RankableSale,
+): { rankable: T[]; unknown: T[] } {
+  const rankable: T[] = []
+  const unknown: T[] = []
+  for (const item of items) {
+    const sale = read(item)
+    if (sale.roi === null || sale.profit === null || sale.purchaseCost === null) {
+      unknown.push(item)
+    } else {
+      rankable.push(item)
+    }
+  }
+  return { rankable, unknown }
+}

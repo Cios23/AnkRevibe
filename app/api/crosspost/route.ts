@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server'
 
 import { badRequest, requireUser, serverError } from '@/lib/api'
 import { isPlatform } from '@/lib/platforms'
-import { crosspost, MissingPurchaseCostError } from '@/lib/operations'
+import { crosspost } from '@/lib/operations'
 import { PLATFORMS, type Platform } from '@/lib/types'
 
 export const runtime = 'nodejs'
@@ -32,13 +32,6 @@ export async function POST(request: Request) {
     )
     return NextResponse.json({ results })
   } catch (cause) {
-    // A missing cost basis is a bad request, not a server fault.
-    if (cause instanceof MissingPurchaseCostError) {
-      return NextResponse.json(
-        { error: cause.message, code: 'missing_purchase_cost' },
-        { status: 400 },
-      )
-    }
     return serverError(cause)
   }
 }

@@ -1,12 +1,7 @@
 import { test, describe } from 'node:test'
 import assert from 'node:assert/strict'
 
-import {
-  crosspost,
-  recordSale,
-  relist,
-  MissingPurchaseCostError,
-} from '../lib/operations'
+import { crosspost, recordSale, relist } from '../lib/operations'
 import type { ListingContext, PlatformAdapter } from '../lib/platforms/adapter'
 import type { Platform } from '../lib/types'
 import { FakeSupabase, asClient } from './fake-supabase.mts'
@@ -421,57 +416,27 @@ describe('relist', () => {
 })
 
 
-// ------------------------------------------------- purchase_cost required
+// ------------------------------------------- purchase_cost is NOT required
 
-describe('crosspost requires a cost basis', () => {
-  test('refuses to list an item with no purchase_cost', async () => {
+describe('crosspost without a cost basis', () => {
+  test('lists normally - a missing cost must not block selling', async () => {
+    // Costs are entered by hand over time. Blocking a listing until then
+    // would stop real selling for the sake of a reporting field.
     const db = seedDb({ inventory: [{ ...ITEM, purchase_cost: null }] })
     const { registry, getAdapter } = makeAdapters()
 
-    await assert.rejects(
-      () => crosspost(asClient(db), 'item-1', ['ebay'], { getAdapter }),
-      MissingPurchaseCostError,
-    )
-
-    // The block must happen before any marketplace call.
-    assert.equal(registry.ebay.calls.length, 0)
-    assert.equal(db.table('platform_listings').length, 0)
-  })
-
-  test('the error names the item and says what to do', async () => {
-    const db = seedDb({ inventory: [{ ...ITEM, purchase_cost: null }] })
-    const { getAdapter } = makeAdapters()
-
-    await assert.rejects(
-      () => crosspost(asClient(db), 'item-1', ['ebay'], { getAdapter }),
-      (err: Error) => {
-        assert.match(err.message, /Levi/, 'should name the item')
-        assert.match(err.message, /purchase_cost/, 'should name the field')
-        assert.match(err.message, /Set a purchase cost/, 'should say what to do')
-        return true
-      },
-    )
-  })
-
-  test('blocks every platform, not just the first', async () => {
-    const db = seedDb({ inventory: [{ ...ITEM, purchase_cost: null }] })
-    const { registry, getAdapter } = makeAdapters()
-
-    await assert.rejects(() =>
-      crosspost(asClient(db), 'item-1', ['ebay', 'poshmark', 'depop'], {
-        getAdapter,
-      }),
-    )
-    for (const p of ['ebay', 'poshmark', 'depop']) {
-      assert.equal(registry[p].calls.length, 0, `${p} should not be called`)
-    }
-  })
-
-  test('a zero cost is a real cost and does NOT block', async () => {
-    const db = seedDb({ inventory: [{ ...ITEM, purchase_cost: 0 }] })
-    const { getAdapter } = makeAdapters()
     const results = await crosspost(asClient(db), 'item-1', ['ebay'], { getAdapter })
+
     assert.equal(results[0].status, 'active')
+    assert.equal(registry.ebay.calls.length, 1)
+    assert.equal(db.table('platform_listings')[0].status, 'active')
+  })
+
+  test('and the item still goes active', async () => {
+    const db = seedDb({ inventory: [{ ...ITEM, purchase_cost: null }] })
+    const { getAdapter } = makeAdapters()
+    await crosspost(asClient(db), 'item-1', ['ebay'], { getAdapter })
+    assert.equal(db.table('inventory')[0].status, 'active')
   })
 })
 

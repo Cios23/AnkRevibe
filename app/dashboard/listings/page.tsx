@@ -1,3 +1,6 @@
+import Link from 'next/link'
+
+import { computeRoi, formatRoi, partitionRankable } from '@/lib/fees'
 import { createClient } from '@/lib/supabase/server'
 import type { Inventory, Order, PlatformListing } from '@/lib/types'
 
@@ -16,56 +19,98 @@ function money(value: number | null) {
   return value === null ? '—' : `$${Number(value).toFixed(2)}`
 }
 
+type Sort = 'recent' | 'roi' | 'profit'
+
+const SORTS: Array<{ key: Sort; label: string }> = [
+  { key: 'recent', label: 'Recent' },
+  { key: 'roi', label: 'ROI' },
+  { key: 'profit', label: 'Profit' },
+]
+
+/** Everything the view needs about one item's economics. */
+type Economics = {
+  order: Order | undefined
+  profit: number | null
+  fee: number | null
+  cost: number | null
+  roi: number | null
+  /** Sold, but we cannot rank it - no cost recorded. */
+  unknownCost: boolean
+}
+
+function economicsFor(item: Inventory, order: Order | undefined): Economics {
+  const cost = item.purchase_cost === null ? null : Number(item.purchase_cost)
+  const profit = order?.profit == null ? null : Number(order.profit)
+  const fee = order?.platform_fee == null ? null : Number(order.platform_fee)
+  return {
+    order,
+    profit,
+    fee,
+    cost,
+    roi: computeRoi(profit, cost),
+    unknownCost: item.status === 'sold' && cost === null,
+  }
+}
+
 /**
  * Sale economics for a sold item.
  *
- * Shows the fee and cost as well as the profit: a bare profit number cannot
- * be checked against a payout report, and these are fee ESTIMATES rather
- * than reconciled figures.
+ * Shows fee and cost alongside profit: a bare profit figure cannot be
+ * checked against a payout report, and these are fee ESTIMATES rather than
+ * reconciled numbers.
  */
-function ProfitLine({
-  item,
-  order,
-}: {
-  item: Inventory
-  order: Order | undefined
-}) {
-  if (!order) return null
+function ProfitLine({ econ }: { econ: Economics }) {
+  if (!econ.order) return null
 
-  const profit = order.profit == null ? null : Number(order.profit)
-  const fee = order.platform_fee == null ? null : Number(order.platform_fee)
-
-  if (profit === null) {
+  if (econ.profit === null) {
     return (
-      <p className="mt-3 border-t border-neutral-100 pt-3 text-xs text-neutral-500">
-        Sold for {money(order.sale_price)} on {order.platform ?? 'unknown'} —
-        profit unavailable
-        {item.purchase_cost === null ? ' (no purchase cost recorded)' : ''}.
-      </p>
+      <div className="mt-3 border-t border-neutral-100 pt-3 text-xs">
+        <span className="rounded bg-neutral-100 px-1.5 py-0.5 font-medium text-neutral-500">
+          no cost data
+        </span>
+        <span className="ml-2 text-neutral-500">
+          Sold for {money(econ.order.sale_price)} on{' '}
+          {econ.order.platform ?? 'unknown'} — profit unknown until a purchase
+          cost is entered.
+        </span>
+      </div>
     )
   }
 
   return (
     <div className="mt-3 border-t border-neutral-100 pt-3 text-xs">
       <span
-        className={`font-medium ${profit >= 0 ? 'text-green-700' : 'text-red-600'}`}
+        className={`font-medium ${
+          econ.profit >= 0 ? 'text-green-700' : 'text-red-600'
+        }`}
       >
-        {money(profit)} profit
+        {money(econ.profit)} profit
       </span>
-      <span className="text-neutral-500">
-        {' — '}
-        {money(order.sale_price)} sale
-        {fee !== null ? ` − ${money(fee)} ${order.platform ?? ''} fee` : ''}
-        {item.purchase_cost !== null
-          ? ` − ${money(item.purchase_cost)} cost`
+      {econ.roi !== null ? (
+        <span className="ml-2 rounded bg-neutral-100 px-1.5 py-0.5 font-medium text-neutral-700">
+          {formatRoi(econ.roi)} ROI
+        </span>
+      ) : null}
+      <span className="ml-2 text-neutral-500">
+        {money(econ.order.sale_price)} sale
+        {econ.fee !== null
+          ? ` − ${money(econ.fee)} ${econ.order.platform ?? ''} fee`
           : ''}
+        {econ.cost !== null ? ` − ${money(econ.cost)} cost` : ''}
       </span>
     </div>
   )
 }
 
-export default async function ListingsPage() {
+export default async function ListingsPage({
+  searchParams,
+}: {
+  searchParams: { sort?: string }
+}) {
   const supabase = createClient()
+  const sort: Sort = SORTS.some((s) => s.key === searchParams.sort)
+    ? (searchParams.sort as Sort)
+    : 'recent'
 
   const [{ data: items, error }, { data: listings }, { data: orders }] =
     await Promise.all([
@@ -90,8 +135,8 @@ export default async function ListingsPage() {
     byItem.set(listing.inventory_id, existing)
   }
 
-  // Most recent order per item - an item can in principle sell more than
-  // once if it was relisted after a cancelled sale.
+  // Most recent order per item - an item can sell more than once if it was
+  // relisted after a cancelled sale.
   const orderByItem = new Map<string, Order>()
   for (const order of (orders ?? []) as Order[]) {
     if (!order.inventory_id) continue
@@ -102,15 +147,39 @@ export default async function ListingsPage() {
   }
 
   const inventory = (items ?? []) as Inventory[]
+  const econOf = new Map<string, Economics>(
+    inventory.map((i) => [i.id, economicsFor(i, orderByItem.get(i.id))]),
+  )
 
-  const sold = inventory.filter((i) => i.status === 'sold')
-  const totalProfit = sold.reduce((sum, item) => {
-    const profit = orderByItem.get(item.id)?.profit
-    return profit == null ? sum : sum + Number(profit)
-  }, 0)
-  const profitKnown = sold.filter(
-    (i) => orderByItem.get(i.id)?.profit != null,
-  ).length
+  const soldItems = inventory.filter((i) => i.status === 'sold')
+
+  // Totals only from items whose cost we actually know. Counting an
+  // unknown-cost sale as zero-cost would overstate profit.
+  const knownProfit = soldItems.filter(
+    (i) => econOf.get(i.id)!.profit !== null,
+  )
+  const totalProfit = knownProfit.reduce(
+    (sum, i) => sum + econOf.get(i.id)!.profit!,
+    0,
+  )
+
+  // Ranked views cover sold items only, and split off the ones that cannot
+  // honestly be ranked rather than sorting them as if cost were zero.
+  let ordered: Inventory[]
+  let unrankable: Inventory[] = []
+
+  if (sort === 'recent') {
+    ordered = inventory
+  } else {
+    const { rankable, unknown } = partitionRankable(soldItems, (i) => {
+      const e = econOf.get(i.id)!
+      return { profit: e.profit, purchaseCost: e.cost, roi: e.roi }
+    })
+    const key = (i: Inventory) =>
+      sort === 'roi' ? econOf.get(i.id)!.roi! : econOf.get(i.id)!.profit!
+    ordered = [...rankable].sort((a, b) => key(b) - key(a))
+    unrankable = unknown
+  }
 
   return (
     <div>
@@ -118,24 +187,22 @@ export default async function ListingsPage() {
         <h1 className="text-xl font-semibold tracking-tight">Listings</h1>
         <span className="text-sm text-neutral-500">
           {inventory.length} items
-          {sold.length > 0 ? (
+          {soldItems.length > 0 ? (
             <>
               {' · '}
-              {sold.length} sold
-              {profitKnown > 0 ? (
+              {soldItems.length} sold
+              {knownProfit.length > 0 ? (
                 <>
                   {' · '}
                   <span
-                    className={
-                      totalProfit >= 0 ? 'text-green-700' : 'text-red-600'
-                    }
+                    className={totalProfit >= 0 ? 'text-green-700' : 'text-red-600'}
                   >
                     {money(totalProfit)} profit
                   </span>
-                  {profitKnown < sold.length ? (
+                  {knownProfit.length < soldItems.length ? (
                     <span className="text-neutral-400">
                       {' '}
-                      (from {profitKnown}/{sold.length})
+                      (from {knownProfit.length}/{soldItems.length} with cost data)
                     </span>
                   ) : null}
                 </>
@@ -145,15 +212,38 @@ export default async function ListingsPage() {
         </span>
       </div>
 
-      {inventory.length === 0 ? (
+      <nav className="mt-3 flex gap-1 text-xs">
+        {SORTS.map((option) => (
+          <Link
+            key={option.key}
+            href={`/dashboard/listings?sort=${option.key}`}
+            className={`rounded-lg px-2.5 py-1 transition ${
+              sort === option.key
+                ? 'bg-neutral-900 font-medium text-white'
+                : 'border border-neutral-300 bg-white text-neutral-600 hover:bg-neutral-100'
+            }`}
+          >
+            {option.label}
+          </Link>
+        ))}
+        {sort !== 'recent' ? (
+          <span className="self-center pl-2 text-neutral-400">
+            sold items only, ranked by {sort === 'roi' ? 'return on cost' : 'profit'}
+          </span>
+        ) : null}
+      </nav>
+
+      {ordered.length === 0 ? (
         <p className="mt-6 rounded-lg border border-neutral-200 bg-white p-6 text-sm text-neutral-500">
-          No inventory yet. Seed a few rows in the Supabase dashboard, or run{' '}
-          <code className="rounded bg-neutral-100 px-1">supabase/seed.sql</code>.
+          {sort === 'recent'
+            ? 'No inventory yet.'
+            : 'Nothing to rank yet — needs a sale and a recorded purchase cost.'}
         </p>
       ) : (
         <ul className="mt-4 space-y-3">
-          {inventory.map((item) => {
+          {ordered.map((item) => {
             const itemListings = byItem.get(item.id) ?? []
+            const econ = econOf.get(item.id)!
             return (
               <li
                 key={item.id}
@@ -161,13 +251,17 @@ export default async function ListingsPage() {
               >
                 <div className="flex flex-wrap items-start justify-between gap-2">
                   <div className="min-w-0">
-                    <p className="truncate font-medium">
-                      {item.title ?? 'Untitled'}
-                    </p>
+                    <p className="truncate font-medium">{item.title ?? 'Untitled'}</p>
                     <p className="mt-0.5 text-xs text-neutral-500">
                       {[item.brand, item.size, item.condition]
                         .filter(Boolean)
                         .join(' · ') || 'No details'}
+                      {' · '}
+                      {econ.cost === null ? (
+                        <span className="text-neutral-400">cost unknown</span>
+                      ) : (
+                        <span>cost {money(econ.cost)}</span>
+                      )}
                     </p>
                   </div>
                   <span
@@ -207,14 +301,14 @@ export default async function ListingsPage() {
                 </div>
 
                 {item.status === 'sold' ? (
-                  <ProfitLine item={item} order={orderByItem.get(item.id)} />
+                  <ProfitLine econ={econ} />
                 ) : null}
 
                 <div className="mt-3 border-t border-neutral-100 pt-3">
                   <ItemActions
                     inventoryId={item.id}
                     isSold={item.status === 'sold'}
-                    hasPurchaseCost={item.purchase_cost !== null}
+                    hasPurchaseCost={econ.cost !== null}
                   />
                 </div>
               </li>
@@ -222,6 +316,40 @@ export default async function ListingsPage() {
           })}
         </ul>
       )}
+
+      {unrankable.length > 0 ? (
+        <section className="mt-8">
+          <h2 className="text-sm font-medium text-neutral-600">
+            Not ranked — {unrankable.length} sold{' '}
+            {unrankable.length === 1 ? 'item' : 'items'} without cost data
+          </h2>
+          <p className="mt-1 text-xs text-neutral-500">
+            Excluded from the ranking above rather than treated as zero-cost.
+            Enter a purchase cost and they join it.
+          </p>
+          <ul className="mt-3 space-y-2">
+            {unrankable.map((item) => {
+              const econ = econOf.get(item.id)!
+              return (
+                <li
+                  key={item.id}
+                  className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-dashed border-neutral-300 bg-neutral-50 px-3 py-2"
+                >
+                  <span className="min-w-0 truncate text-sm text-neutral-600">
+                    {item.title ?? 'Untitled'}
+                  </span>
+                  <span className="text-xs text-neutral-500">
+                    sold {money(econ.order?.sale_price ?? null)} ·{' '}
+                    <span className="rounded bg-neutral-200 px-1.5 py-0.5 font-medium text-neutral-600">
+                      no cost data
+                    </span>
+                  </span>
+                </li>
+              )
+            })}
+          </ul>
+        </section>
+      ) : null}
     </div>
   )
 }

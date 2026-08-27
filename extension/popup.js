@@ -185,20 +185,14 @@
       const buttons = document.createElement("div");
       buttons.className = "buttons";
 
-      // Same rule the server enforces: no cost basis, no listing. Without
-      // it we cannot compute profit on sale or evaluate offers on margin.
-      const hasCost = item.purchase_cost != null;
-
+      // A missing cost does NOT block listing - it only means profit and
+      // margin are unknown for this item until one is entered.
       for (const platform of ["poshmark", "depop"]) {
         const price = platform === "poshmark" ? item.poshmark_price : item.depop_price;
         const btn = document.createElement("button");
         btn.textContent =
           platform === "poshmark" ? "Poshmark" : "Depop";
-        if (!hasCost) {
-          btn.disabled = true;
-          btn.title = "Set a purchase cost before listing this item";
-          btn.style.opacity = "0.5";
-        } else if (price == null) {
+        if (price == null) {
           btn.disabled = true;
           btn.title = "No " + platform + "_price set";
           btn.style.opacity = "0.5";

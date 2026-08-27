@@ -43,12 +43,7 @@ export function ItemActions({
       <div className="flex flex-wrap items-center gap-1.5">
         <button
           type="button"
-          disabled={pending || !hasPurchaseCost}
-          title={
-            hasPurchaseCost
-              ? undefined
-              : 'Set a purchase cost before listing this item'
-          }
+          disabled={pending}
           onClick={() => run(() => crosspostAction(inventoryId))}
           className={buttonClass}
         >
@@ -88,8 +83,9 @@ export function ItemActions({
       </div>
 
       {!hasPurchaseCost ? (
-        <p className="text-xs text-amber-700">
-          No purchase cost set — crossposting is blocked until it is.
+        <p className="text-xs text-neutral-500">
+          No purchase cost — listing still works, but profit and ROI stay
+          unknown for this item until one is entered.
         </p>
       ) : null}
 

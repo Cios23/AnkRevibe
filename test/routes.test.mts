@@ -48,16 +48,8 @@ mock.module('@/lib/supabase/server', {
   },
 })
 
-class FakeMissingPurchaseCostError extends Error {
-  constructor(public inventoryId: string, public title: string | null) {
-    super(`Cannot crosspost "${title}": purchase_cost is not set.`)
-    this.name = 'MissingPurchaseCostError'
-  }
-}
-
 mock.module('@/lib/operations', {
   namedExports: {
-    MissingPurchaseCostError: FakeMissingPurchaseCostError,
     crosspost: async (...args: unknown[]) => {
       calls.crosspost.push(args)
       return crosspostImpl(...args)
@@ -200,20 +192,6 @@ describe('POST /api/crosspost', () => {
     assert.match((await response.json()).error, /database exploded/)
   })
 
-  test('a missing purchase_cost is a 400, not a 500', async () => {
-    // It is the caller's data that is wrong, not our server - and the UI
-    // needs to tell the user what to fix.
-    crosspostImpl = async () => {
-      throw new FakeMissingPurchaseCostError('item-1', 'Denim Jacket')
-    }
-    const response = await crosspostRoute(post({ inventoryId: 'item-1' }))
-    assert.equal(response.status, 400)
-
-    const body = await response.json()
-    assert.equal(body.code, 'missing_purchase_cost')
-    assert.match(body.error, /purchase_cost/)
-    assert.match(body.error, /Denim Jacket/)
-  })
 })
 
 describe('POST /api/sale', () => {

@@ -78,23 +78,6 @@ async function loadExistingListingIds(
   return new Map((data ?? []).map((r) => [r.platform, r.platform_listing_id]))
 }
 
-/**
- * Refusing to list without a cost basis is a business rule, not a
- * validation nicety: an item listed with no purchase_cost cannot have its
- * profit computed when it sells, and cannot be reasoned about by the
- * offer automation - which would silently skip it forever.
- */
-export class MissingPurchaseCostError extends Error {
-  constructor(readonly inventoryId: string, readonly title: string | null) {
-    super(
-      `Cannot crosspost "${title ?? inventoryId}": purchase_cost is not set. ` +
-        `Set a purchase cost on the item first - without it we cannot ` +
-        `compute profit when it sells or evaluate offers against margin.`,
-    )
-    this.name = 'MissingPurchaseCostError'
-  }
-}
-
 export type CrosspostResult = {
   platform: Platform
   status: 'active' | 'error'
@@ -116,11 +99,11 @@ export async function crosspost(
   const getAdapter = deps.getAdapter ?? defaultGetAdapter
   const item = await loadItem(supabase, inventoryId)
 
-  // Blocks every platform, before any marketplace call is made.
-  if (item.purchase_cost === null || item.purchase_cost === undefined) {
-    throw new MissingPurchaseCostError(inventoryId, item.title)
-  }
-
+  // purchase_cost is deliberately NOT required to list. Costs are entered
+  // by hand over time, and blocking a listing until then would stop real
+  // selling for a reporting field. The consequence is contained: profit and
+  // ROI report "unknown" for these items rather than assuming a cost, and
+  // they are excluded from ranked views instead of sorting as if cost = 0.
   const photos = await loadPhotos(supabase, inventoryId)
   const existing = await loadExistingListingIds(supabase, inventoryId)
   const results: CrosspostResult[] = []

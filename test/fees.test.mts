@@ -2,7 +2,15 @@ import { test, describe } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 
-import { computeProfit, platformFee, describeFee, PLATFORM_FEES } from '../lib/fees'
+import {
+  computeProfit,
+  computeRoi,
+  describeFee,
+  formatRoi,
+  partitionRankable,
+  platformFee,
+  PLATFORM_FEES,
+} from '../lib/fees'
 import type { Platform } from '../lib/types'
 
 describe('platformFee', () => {
@@ -134,5 +142,101 @@ describe('fee model agreement with the extension', () => {
         )} vs server ${serverFee.toFixed(2)}`,
       )
     }
+  })
+})
+
+// ------------------------------------------------------------------- ROI
+
+describe('computeRoi', () => {
+  test('is profit as a fraction of cost', () => {
+    assert.equal(computeRoi(50, 25), 2) // 200%
+    assert.equal(computeRoi(10, 40), 0.25) // 25%
+  })
+
+  test('a loss is negative ROI', () => {
+    assert.equal(computeRoi(-10, 20), -0.5)
+  })
+
+  test('unknown cost yields null, never a number', () => {
+    // The whole point: an item with no cost must not rank as if cost were 0,
+    // which would make every such item look infinitely profitable.
+    assert.equal(computeRoi(50, null), null)
+    assert.equal(computeRoi(50, undefined), null)
+  })
+
+  test('an unsold item has no ROI', () => {
+    assert.equal(computeRoi(null, 25), null)
+  })
+
+  test('zero cost is unrankable rather than infinite', () => {
+    // A free item has a real profit but an undefined ratio; returning
+    // Infinity would sort it above every genuine result.
+    assert.equal(computeRoi(50, 0), null)
+    assert.equal(computeRoi(50, -5), null)
+  })
+
+  test('rejects non-numeric input', () => {
+    assert.equal(computeRoi('x' as unknown as number, 10), null)
+  })
+})
+
+describe('formatRoi', () => {
+  test('renders a percentage', () => {
+    assert.equal(formatRoi(2), '200%')
+    assert.equal(formatRoi(0.25), '25%')
+  })
+
+  test('unknown renders as a dash, not 0%', () => {
+    assert.equal(formatRoi(null), '—')
+  })
+
+  test('a loss is signed', () => {
+    assert.match(formatRoi(-0.5), /50%/)
+    assert.ok(formatRoi(-0.5).startsWith('−'))
+  })
+})
+
+describe('partitionRankable', () => {
+  type Row = { id: string; profit: number | null; cost: number | null }
+  const read = (r: Row) => ({
+    profit: r.profit,
+    purchaseCost: r.cost,
+    roi: computeRoi(r.profit, r.cost),
+  })
+
+  test('separates items that cannot be honestly ranked', () => {
+    const rows: Row[] = [
+      { id: 'known', profit: 50, cost: 25 },
+      { id: 'no-cost', profit: null, cost: null },
+      { id: 'free', profit: 50, cost: 0 },
+    ]
+    const { rankable, unknown } = partitionRankable(rows, read)
+
+    assert.deepEqual(rankable.map((r) => r.id), ['known'])
+    // Both the unknown-cost and the zero-cost item are unrankable, for
+    // different reasons, and neither belongs in a sorted list.
+    assert.deepEqual(unknown.map((r) => r.id).sort(), ['free', 'no-cost'])
+  })
+
+  test('no item is silently dropped', () => {
+    const rows: Row[] = [
+      { id: 'a', profit: 10, cost: 5 },
+      { id: 'b', profit: null, cost: null },
+      { id: 'c', profit: 1, cost: 100 },
+    ]
+    const { rankable, unknown } = partitionRankable(rows, read)
+    assert.equal(rankable.length + unknown.length, rows.length)
+  })
+
+  test('sorting the rankable set orders by return, not raw profit', () => {
+    const rows: Row[] = [
+      { id: 'big-profit-low-roi', profit: 100, cost: 500 }, // 20%
+      { id: 'small-profit-high-roi', profit: 30, cost: 10 }, // 300%
+    ]
+    const { rankable } = partitionRankable(rows, read)
+    const byRoi = [...rankable].sort(
+      (a, b) => computeRoi(b.profit, b.cost)! - computeRoi(a.profit, a.cost)!,
+    )
+    assert.equal(byRoi[0].id, 'small-profit-high-roi')
   })
 })
