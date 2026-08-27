@@ -242,24 +242,73 @@
   }
 
   /**
-   * Put the picker back at the department list.
-   *
-   * Once a category is chosen the field keeps that value, so the next walk
-   * would start partway down the tree - which is why the second department
-   * was not found last time. "All Categories" is the control that clears it.
+   * The department list, captured on the first open. The definition of root.
    */
-  async function resetToRoot(container) {
-    await closePicker();
-    await openPicker(container, false);
+  let rootSignature = null;
+  let rootNames = [];
 
-    const reset = rawRows(activeScope).find((r) => CONFIG.resetRow.test(r.text));
-    if (reset) {
-      reset.el.click();
-      await wait(CONFIG.levelDelay);
-      await closePicker();
+  /**
+   * Put the picker back at the DEPARTMENT list, and verify it got there.
+   *
+   * The previous version clicked "All Categories" once and trusted it. That
+   * control moves up ONE level, so from inside Women it lands on Women's
+   * category list rather than the department list - and the next walk then
+   * treated "Accessories", "Bags", "Dresses" as though they were
+   * departments, which is why every one came back not-found and Men was
+   * never reached.
+   *
+   * So this climbs in a loop and checks against the real department list
+   * rather than assuming a fixed depth.
+   */
+  async function resetToRoot(container, verbose) {
+    await closePicker();
+    let rows = await openPicker(container, false);
+
+    // First call defines what root looks like.
+    if (rootSignature === null) {
+      rootSignature = signature(rows);
+      rootNames = rows.map((r) => r.text);
+      return rows;
     }
 
-    return await openPicker(container, false);
+    for (let attempt = 0; attempt < 8; attempt++) {
+      if (signature(rows) === rootSignature) return rows;
+
+      const reset = rawRows(activeScope).find((r) =>
+        CONFIG.resetRow.test(r.text)
+      );
+      if (!reset) break;
+
+      if (verbose) {
+        console.log(
+          "%c[reset] attempt " +
+            (attempt + 1) +
+            " - at [" +
+            rows.slice(0, 4).map((r) => r.text).join(", ") +
+            "...], climbing",
+          "color:#6b7280"
+        );
+      }
+
+      reset.el.click();
+      await wait(CONFIG.levelDelay);
+
+      rows = visibleRows(activeScope);
+      // Clicking reset can close the panel; reopen and keep climbing.
+      if (!rows.length) rows = await openPicker(container, false);
+    }
+
+    if (signature(rows) !== rootSignature) {
+      console.warn(
+        "%c[reset] could NOT get back to the department list",
+        "color:#b91c1c;font-weight:700"
+      );
+      console.warn("  expected:", rootNames.slice(0, 8));
+      console.warn("  saw     :", rows.map((r) => r.text).slice(0, 8));
+      return null;
+    }
+
+    return rows;
   }
 
   /**
@@ -311,9 +360,13 @@
     return;
   }
 
-  const departments = departmentRows
-    .map((r) => r.text)
-    .slice(0, CONFIG.maxDepartments);
+  // Define root from the FIRST open, while nothing is selected. Every later
+  // reset is checked against this, so a reset that lands one level too deep
+  // is caught instead of being walked as if it were the department list.
+  rootSignature = signature(departmentRows);
+  rootNames = departmentRows.map((r) => r.text);
+
+  const departments = rootNames.slice(0, CONFIG.maxDepartments);
   console.log("departments (" + departments.length + "):", departments);
 
   const tree = {};
@@ -323,7 +376,23 @@
   for (const department of departments) {
     tree[department] = {};
 
-    let rows = await resetToRoot(container);
+    let rows = await resetToRoot(container, CONFIG.verbose);
+    if (!rows) {
+      problems.push('department "' + department + '": could not reset to root');
+      console.warn("  " + department + " - reset failed, skipping");
+      continue;
+    }
+    // If the visible list does not contain this department, we are not at
+    // root and drilling would pick something arbitrary.
+    if (!rows.some((r) => key(r.text) === key(department))) {
+      problems.push('department "' + department + '": not at root when drilling');
+      console.warn(
+        "  " + department + " - not on screen; saw:",
+        rows.map((r) => r.text).slice(0, 8)
+      );
+      continue;
+    }
+
     const deptStep = await drill(rows, department);
 
     if (deptStep.kind !== "advanced") {
@@ -337,7 +406,12 @@
     console.log("  " + department + " (" + categories.length + " categories)");
 
     for (const category of categories) {
-      rows = await resetToRoot(container);
+      rows = await resetToRoot(container, false);
+      if (!rows) {
+        problems.push('"' + department + '" > "' + category + '": reset failed');
+        tree[department][category] = [];
+        continue;
+      }
       const again = await drill(rows, department);
       if (again.kind !== "advanced") {
         problems.push('"' + department + '" > "' + category + '": lost department');
