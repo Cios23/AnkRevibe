@@ -133,32 +133,40 @@ accumulates only as the extension observes crossposts. It does nothing until
 you have crosslisted to Depop through it — it cannot discover your existing
 Depop listings.
 
-**9. Selectors are unverified and dated — with two exceptions.** Poshmark's
-category and subcategory containers are **observed**, not guessed:
+**9. Selectors are unverified and dated — with the category fields as the
+exception.** Poshmark splits category across TWO confirmed fields:
 
 ```
-div.listing-editor__category-container.listing-editor__input--half.va--t
-div.listing-editor__subcategory-container.listing-editor__input--half.va--t
+div.listing-editor__category-container      department THEN category
+div.listing-editor__subcategory-container    separate, optional
 ```
 
-They are Vue components, not native `<select>`, so `setNativeValue` does
-nothing to them — `lib/dropdown.js` clicks them open and clicks an option.
-The **department** tier (the third) was not observed and is inferred from
-the same naming convention.
+The first is a nested picker holding two levels; choosing a category selects
+it and closes the panel, leaving e.g. "Women Other" in the field. Subcategory
+is a **separate dropdown** that only populates once a category is set — not a
+third level of the first picker. A scrape that assumed otherwise captured 20
+Women categories and an empty subcategory list for every one of them.
+
+Rows are `.dropdown__link.dropdown__menu__item` (confirmed). "All Categories"
+is excluded from options because it is the **reset** control, and is clicked
+deliberately to return the picker to the top — a selection persists in
+`selectedvalue`, so without that reset the next walk starts partway down the
+tree.
+
+Subcategory failing does **not** fail the fill: Poshmark labels it optional,
+and refusing to list over an optional field would be worse than listing
+without it. The miss is recorded to `chrome.storage.local` instead.
 
 Category paths come from `lib/category-map.generated.js`, emitted by
 `npm run crosslist:generate-map` from `lib/crosslist` so the rules are not
-reimplemented in browser JS. It covers 139 category pairs; 67 are unmapped,
-almost all non-apparel with no clothing category on these platforms.
+reimplemented in browser JS.
 
 Option matching **refuses ambiguity**: "Shirts" against both "Dress Shirts"
 and "Casual Button Down Shirts" picks neither and reports what was offered,
 since a wrong pick files the item under a category nobody chose.
 
 Every other CSS selector came from ResellOS and reflects whenever it last
-worked. Poshmark and Depop change their
-DOM frequently. Expect to fix selectors on first real use; each script has
-multi-selector fallback lists to soften that.
+worked.
 
 **10. Localhost only.** `manifest.json` and `config.js` list
 `http://localhost:3000`. Add the production origin to `host_permissions`, the

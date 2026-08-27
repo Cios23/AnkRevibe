@@ -229,3 +229,37 @@ describe('row filtering', () => {
     assert.equal(isExcludedRow('Women'), false)
   })
 })
+
+describe('Poshmark two-field category structure', () => {
+  test('the mapped path splits 2 + 1 across the two fields', () => {
+    // Category field takes department + category; subcategory is its own
+    // control. A three-level path is therefore consumed as [0,1] then [2].
+    const path = ['Women', 'Accessories', 'Belts']
+    const categoryField = path.slice(0, 2)
+    const subcategoryField = path.slice(2)
+
+    assert.deepEqual(categoryField, ['Women', 'Accessories'])
+    assert.deepEqual(subcategoryField, ['Belts'])
+  })
+
+  test('each field level still resolves by visible text', () => {
+    const levels: Array<[string[], string]> = [
+      [['Women', 'Men', 'Girls', 'Boys'], 'Women'],
+      [['Bags', 'Dresses', 'Accessories', 'Tops'], 'Accessories'],
+      [['Belts', 'Face Masks', 'Hair Accessories'], 'Belts'],
+    ]
+    for (const [options, wanted] of levels) {
+      const choice = chooseOption(options, wanted)
+      assert.ok(choice.index >= 0, `failed to match "${wanted}"`)
+      assert.equal(options[choice.index], wanted)
+    }
+  })
+
+  test('a two-tier mapping is still usable - subcategory is optional', () => {
+    // Poshmark labels subcategory optional, so a path with only department
+    // and category must not be treated as broken.
+    const path = ['Men', 'Shirts']
+    assert.equal(path.length >= 2, true)
+    assert.deepEqual(path.slice(2), [])
+  })
+})

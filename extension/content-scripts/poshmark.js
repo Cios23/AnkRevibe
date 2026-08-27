@@ -60,29 +60,24 @@
   ];
 
   /**
-   * Category picker - OBSERVED on the live create-listing page.
+   * Category is split across TWO fields on the live page.
    *
-   * It is a single nested text list, not three separate dropdowns: opening
-   * it shows departments, clicking one replaces the list with that
-   * department's categories, and clicking a category replaces it again with
-   * subcategories. So the container is opened ONCE and navigated, which is
-   * what lib/dropdown.js selectNestedPath does.
+   *   Category field     a nested picker holding department THEN category.
+   *                      Choosing a category selects it and closes the panel,
+   *                      leaving e.g. "Women Other" in the field.
+   *   Subcategory field  a SEPARATE dropdown, "Select Subcategory
+   *                      (optional)", which only populates once a category
+   *                      is set.
    *
-   * The tree is never hardcoded here - whatever path lib/crosslist computes
-   * is what gets clicked through.
+   * Both container classes are confirmed. Treating subcategory as a third
+   * level of the first picker is what made a scrape of every Women category
+   * return an empty subcategory list - that level does not exist there.
    */
   const SEL_CATEGORY_CONTAINER = [
     "div.listing-editor__category-container",
     '[class*="listing-editor__category-container"]',
   ];
 
-  /**
-   * Subcategory has its own container on the page. Some builds finish all
-   * three levels inside the first panel; others hand the last level to this
-   * one. Both are handled: if the nested walk consumes the whole path we are
-   * done, and if it stops with one level left this is tried for the
-   * remainder.
-   */
   const SEL_SUBCATEGORY_CONTAINER = [
     "div.listing-editor__subcategory-container",
     '[class*="listing-editor__subcategory-container"]',
@@ -97,12 +92,14 @@
   }
 
   /**
-   * Click through Department > Category > Subcategory.
+   * Set Department > Category in the first field, then Subcategory in the
+   * second.
    *
-   * Stops at the first failed level rather than pressing on. Each level's
-   * list is generated from the one above, so continuing past a miss selects
-   * an arbitrary category rather than an incomplete one - and an item filed
-   * somewhere wrong looks correctly listed.
+   * Subcategory is labelled optional by Poshmark, so failing to set it does
+   * NOT fail the fill - the listing is still correctly categorised without
+   * it, and refusing to fill anything over an optional field would be worse
+   * than filling most of it. It is reported so a wrong name in our mapping
+   * table still surfaces.
    */
   async function fillCategory(path) {
     if (!Array.isArray(path) || path.length < 2) {
@@ -114,29 +111,33 @@
       return { ok: false, reason: "no-container", step: "category" };
     }
 
-    const result = await globalThis.AnkDropdown.selectNestedPath(container, path);
-    if (result.ok) return result;
+    // Two levels, one picker.
+    const main = await globalThis.AnkDropdown.selectNestedPath(container, [
+      path[0],
+      path[1],
+    ]);
+    if (!main.ok) return Object.assign({ step: "category" }, main);
 
-    // The nested walk got partway and the list stopped advancing - the build
-    // that splits the final level into its own field. Finish there.
-    const consumed = result.trace ? result.trace.length : 0;
-    const remaining = path.slice(consumed);
+    if (!path[2]) return { ok: true, trace: main.trace };
 
-    if (consumed > 0 && remaining.length > 0) {
-      const subContainer = firstContainer(SEL_SUBCATEGORY_CONTAINER);
-      if (subContainer) {
-        const tail = await globalThis.AnkDropdown.selectNestedPath(
-          subContainer,
-          remaining,
-        );
-        if (tail.ok) {
-          return { ok: true, trace: [...(result.trace || []), ...tail.trace] };
-        }
-        return { ...tail, reason: tail.reason, viaSubcategoryField: true };
-      }
+    const subContainer = firstContainer(SEL_SUBCATEGORY_CONTAINER);
+    if (!subContainer) {
+      return {
+        ok: true,
+        trace: main.trace,
+        subcategory: { ok: false, reason: "no-subcategory-field" },
+      };
     }
 
-    return result;
+    const sub = await globalThis.AnkDropdown.selectNestedPath(subContainer, [
+      path[2],
+    ]);
+
+    return {
+      ok: true,
+      trace: sub.ok ? [...main.trace, ...sub.trace] : main.trace,
+      subcategory: sub,
+    };
   }
 
   const SEL_BRAND = [
@@ -279,6 +280,17 @@
       showProgress(5, 6, "Filling category...");
       if (listing.categoryPath) {
         const categoryResult = await fillCategory(listing.categoryPath);
+        if (categoryResult.ok && categoryResult.subcategory && !categoryResult.subcategory.ok) {
+          // Optional field, so the listing still stands - but a miss here is
+          // usually a wrong name in our mapping table.
+          chrome.storage.local.set({
+            poshmark_subcategory_last_failure: {
+              at: new Date().toISOString(),
+              wanted: listing.categoryPath[2],
+              ...categoryResult.subcategory,
+            },
+          });
+        }
         if (!categoryResult.ok) {
           // Kept so a wrong name in our mapping table is a one-line fix
           // rather than a mystery.
