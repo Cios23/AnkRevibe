@@ -197,3 +197,35 @@ describe('navigating a real Poshmark path', () => {
     })
   })
 })
+
+describe('row filtering', () => {
+  let isExcludedRow: (text: string) => boolean
+  let ROW_SELECTOR: string
+
+  before(() => {
+    const source = readFileSync('extension/lib/dropdown.js', 'utf8')
+    new Function(source).call(globalThis)
+    isExcludedRow = (globalThis as any).AnkDropdown.isExcludedRow
+    ROW_SELECTOR = (globalThis as any).AnkDropdown.ROW_SELECTOR
+  })
+
+  test('uses the confirmed row class', () => {
+    assert.equal(ROW_SELECTOR, '.dropdown__link.dropdown__menu__item')
+  })
+
+  test('excludes "All Categories" - it resets rather than selects', () => {
+    assert.equal(isExcludedRow('All Categories'), true)
+    assert.equal(isExcludedRow('  all categories  '), true)
+  })
+
+  test('excludes the closed-state placeholder', () => {
+    // Reading this as a department is what produced an empty tree.
+    assert.equal(isExcludedRow('Select Category'), true)
+  })
+
+  test('does NOT exclude real categories that merely contain those words', () => {
+    assert.equal(isExcludedRow('Accessories'), false)
+    assert.equal(isExcludedRow('All Weather Coats'), false)
+    assert.equal(isExcludedRow('Women'), false)
+  })
+})

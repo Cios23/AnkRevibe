@@ -1,29 +1,54 @@
 // Driving Poshmark's category picker.
 //
-// CONFIRMED STRUCTURE (live screenshot): it is a single nested text list,
-// not three independent dropdowns. Opening it shows departments (Women, Men,
-// Girls, Boys...); clicking one REPLACES the list with that department's
-// categories (Bags, Dresses, Accessories...); clicking a category replaces it
-// again with subcategories (Belts, Hair Accessories...). Every level is plain
-// clickable text rows.
+// CONFIRMED STRUCTURE (live page): a single nested text list, not three
+// independent dropdowns. Opening it shows departments (Women, Men, Girls,
+// Boys...); clicking one REPLACES the list with that department's categories;
+// clicking a category replaces it again with subcategories.
 //
-// Two consequences drive this file:
+// CONFIRMED ROW SELECTOR: .dropdown__link.dropdown__menu__item
+// The current selection is reflected in a `selectedvalue` attribute on the
+// outer container and in the trigger's visible span text.
 //
-//   1. The panel is opened ONCE and then navigated. An earlier version here
-//      opened a separate container per tier, which cannot work against a
-//      list that drills down in place.
+// Three things follow, and each was a bug before they were known:
+//
+//   1. The panel is opened ONCE and navigated. Opening a separate container
+//      per tier cannot work against a list that drills down in place.
 //   2. Between levels the list re-renders, so the next match must wait for
-//      the options to actually CHANGE. Matching immediately would read the
-//      stale list and, since department and category names can repeat
-//      ("Accessories" appears under several departments), could click the
-//      wrong row while looking correct.
+//      the rows to actually CHANGE. Names repeat across departments
+//      ("Accessories" under both Women and Men), so matching a stale list
+//      can click a plausible-looking wrong row.
+//   3. Rows are matched by their real class, not by guessing across every
+//      div and span. The generic guess also swept up "Select Category" -
+//      the field's own closed-state label - and treated it as a department.
 //
-// The tree itself is never hardcoded. Whatever path lib/crosslist computes
+// The tree itself is never hardcoded: whatever path lib/crosslist computes
 // is what gets navigated.
 (function () {
   "use strict";
 
   const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+
+  /** The real row class. */
+  const ROW_SELECTOR = ".dropdown__link.dropdown__menu__item";
+
+  /**
+   * Fallbacks, used only if the confirmed selector matches nothing - a class
+   * rename should degrade rather than fail outright.
+   */
+  const ROW_FALLBACKS = [
+    ".dropdown__menu__item",
+    ".dropdown__link",
+    '[role="option"]',
+    '[role="menuitem"]',
+  ];
+
+  /**
+   * Rows that are navigation, not categories.
+   *
+   * "All Categories" is a reset/back affordance; selecting it would clear the
+   * field rather than choose anything.
+   */
+  const EXCLUDED_ROWS = [/^all categories$/i, /^select category$/i];
 
   function isVisible(el) {
     if (!el || !el.isConnected) return false;
@@ -33,11 +58,15 @@
     return style.visibility !== "hidden" && style.display !== "none";
   }
 
-  const normalise = (s) =>
-    String(s || "")
+  /** Collapse internal whitespace and trim - rows carry newlines and padding. */
+  const cleanText = (el) =>
+    String(el && el.textContent ? el.textContent : "")
       .replace(/\s+/g, " ")
-      .trim()
-      .toLowerCase();
+      .trim();
+
+  const normalise = (s) => String(s || "").replace(/\s+/g, " ").trim().toLowerCase();
+
+  const isExcluded = (text) => EXCLUDED_ROWS.some((re) => re.test(text.trim()));
 
   /**
    * Pick the option matching `wanted`, in decreasing confidence.
@@ -55,8 +84,6 @@
     const exact = options.indexOf(target);
     if (exact >= 0) return { index: exact, reason: "exact" };
 
-    // Our table says "Tees - Short Sleeve"; the live row may punctuate or
-    // space it differently.
     const loose = (s) => s.replace(/[^a-z0-9]/g, "");
     const looseTarget = loose(target);
     const looseHits = [];
@@ -80,45 +107,30 @@
     };
   }
 
-  /**
-   * The clickable text rows currently showing.
-   *
-   * Deliberately broad: the rows are plain text, so rather than guess one
-   * class name this collects likely row elements and keeps those that have
-   * their own short text and no nested row inside them - which is what a
-   * leaf row looks like regardless of markup.
-   */
+  /** The category rows currently on screen, in order. */
   function visibleRows(root) {
     const scope = root && root.isConnected ? root : document;
-    const candidates = Array.from(
-      scope.querySelectorAll(
-        'li, [role="option"], [role="menuitem"], button, a, div, span'
-      )
-    );
 
-    const rows = [];
-    for (const el of candidates) {
-      if (!isVisible(el)) continue;
-      const text = (el.textContent || "").replace(/\s+/g, " ").trim();
-      // A category row is a short label, not a paragraph or a container
-      // holding the whole list.
-      if (!text || text.length > 60) continue;
-      // Skip anything that merely wraps another row with identical text.
-      const child = Array.from(el.children).find(
-        (c) => (c.textContent || "").trim() === text
-      );
-      if (child) continue;
-      rows.push({ el, text });
+    let nodes = Array.from(scope.querySelectorAll(ROW_SELECTOR));
+    if (!nodes.length) {
+      for (const fallback of ROW_FALLBACKS) {
+        nodes = Array.from(scope.querySelectorAll(fallback));
+        if (nodes.length) break;
+      }
     }
 
-    // De-duplicate by text, keeping the innermost occurrence.
+    const rows = [];
     const seen = new Set();
-    return rows.filter((r) => {
-      const key = normalise(r.text);
-      if (seen.has(key)) return false;
-      seen.add(key);
-      return true;
-    });
+    for (const el of nodes) {
+      if (!isVisible(el)) continue;
+      const text = cleanText(el);
+      if (!text || isExcluded(text)) continue;
+      const k = normalise(text);
+      if (seen.has(k)) continue;
+      seen.add(k);
+      rows.push({ el, text });
+    }
+    return rows;
   }
 
   /** Cheap fingerprint of the currently visible rows. */
@@ -126,13 +138,19 @@
     return rows.map((r) => normalise(r.text)).join("|");
   }
 
+  /** What the field currently reports as selected. */
+  function currentSelection(container) {
+    if (!container) return null;
+    const attr = container.getAttribute("selectedvalue");
+    if (attr && attr.trim()) return attr.trim();
+    const span = container.querySelector("span");
+    return span ? cleanText(span) : null;
+  }
+
   /**
    * Wait until the visible rows differ from `previous`.
    *
-   * This is the step that makes nested navigation safe. Without it the next
-   * level is matched against the list that is still on screen, and since
-   * names repeat across departments ("Accessories" under Women and Men),
-   * a stale match can click a plausible-looking wrong row.
+   * This is what makes nested navigation safe - see note 2 in the header.
    */
   async function waitForRowsToChange(root, previous, timeout = 4000) {
     const start = Date.now();
@@ -148,8 +166,8 @@
    * Navigate a nested category list: open once, then click each level.
    *
    * Returns a per-level trace, and on failure reports the rows the list was
-   * actually offering - which is what turns a wrong name in our mapping
-   * table into a one-line fix rather than a mystery.
+   * actually offering - which turns a wrong name in our mapping table into a
+   * one-line fix rather than a mystery.
    */
   async function selectNestedPath(container, path, options = {}) {
     const openDelay = options.openDelay ?? 700;
@@ -160,11 +178,9 @@
       return { ok: false, reason: "no-path" };
     }
 
-    // Open the picker. The trigger is usually the container itself.
     const trigger =
-      container.querySelector(
-        'input, [role="combobox"], [role="button"], button'
-      ) || container;
+      container.querySelector('input, [role="combobox"], [role="button"], button') ||
+      container;
     trigger.click();
     await wait(openDelay);
 
@@ -176,19 +192,15 @@
 
       let rows = visibleRows(container);
       if (!rows.length) {
-        // Some builds render the panel in a portal outside the container.
+        // Some builds render the menu in a portal outside the field.
         rows = visibleRows(document);
       }
-
       if (!rows.length) {
         return { ok: false, reason: "no-rows", level, wanted, trace };
       }
 
       const before = rowSignature(rows);
-      const choice = chooseOption(
-        rows.map((r) => r.text),
-        wanted,
-      );
+      const choice = chooseOption(rows.map((r) => r.text), wanted);
 
       if (choice.index < 0) {
         return {
@@ -202,10 +214,13 @@
       }
 
       rows[choice.index].el.click();
-      trace.push({ level, wanted, matched: rows[choice.index].text, how: choice.reason });
+      trace.push({
+        level,
+        wanted,
+        matched: rows[choice.index].text,
+        how: choice.reason,
+      });
 
-      // The last click makes the selection; there is no next list to wait
-      // for, and the panel usually closes.
       if (level === path.length - 1) {
         await wait(settleDelay);
         break;
@@ -224,13 +239,18 @@
       }
     }
 
-    return { ok: true, trace };
+    // The field reports its own selection; use it rather than assuming the
+    // clicks landed.
+    return { ok: true, trace, selected: currentSelection(container) };
   }
 
   globalThis.AnkDropdown = {
+    ROW_SELECTOR,
+    isExcludedRow: isExcluded,
     chooseOption,
     visibleRows,
     rowSignature,
+    currentSelection,
     selectNestedPath,
   };
 })();
