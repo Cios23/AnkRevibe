@@ -1,5 +1,5 @@
 import { createClient } from '@/lib/supabase/server'
-import type { Inventory, PlatformListing } from '@/lib/types'
+import type { Inventory, Order, PlatformListing } from '@/lib/types'
 
 import { ItemActions } from './ItemActions'
 
@@ -16,13 +16,63 @@ function money(value: number | null) {
   return value === null ? '—' : `$${Number(value).toFixed(2)}`
 }
 
+/**
+ * Sale economics for a sold item.
+ *
+ * Shows the fee and cost as well as the profit: a bare profit number cannot
+ * be checked against a payout report, and these are fee ESTIMATES rather
+ * than reconciled figures.
+ */
+function ProfitLine({
+  item,
+  order,
+}: {
+  item: Inventory
+  order: Order | undefined
+}) {
+  if (!order) return null
+
+  const profit = order.profit == null ? null : Number(order.profit)
+  const fee = order.platform_fee == null ? null : Number(order.platform_fee)
+
+  if (profit === null) {
+    return (
+      <p className="mt-3 border-t border-neutral-100 pt-3 text-xs text-neutral-500">
+        Sold for {money(order.sale_price)} on {order.platform ?? 'unknown'} —
+        profit unavailable
+        {item.purchase_cost === null ? ' (no purchase cost recorded)' : ''}.
+      </p>
+    )
+  }
+
+  return (
+    <div className="mt-3 border-t border-neutral-100 pt-3 text-xs">
+      <span
+        className={`font-medium ${profit >= 0 ? 'text-green-700' : 'text-red-600'}`}
+      >
+        {money(profit)} profit
+      </span>
+      <span className="text-neutral-500">
+        {' — '}
+        {money(order.sale_price)} sale
+        {fee !== null ? ` − ${money(fee)} ${order.platform ?? ''} fee` : ''}
+        {item.purchase_cost !== null
+          ? ` − ${money(item.purchase_cost)} cost`
+          : ''}
+      </span>
+    </div>
+  )
+}
+
 export default async function ListingsPage() {
   const supabase = createClient()
 
-  const [{ data: items, error }, { data: listings }] = await Promise.all([
-    supabase.from('inventory').select('*').order('created_at', { ascending: false }),
-    supabase.from('platform_listings').select('*'),
-  ])
+  const [{ data: items, error }, { data: listings }, { data: orders }] =
+    await Promise.all([
+      supabase.from('inventory').select('*').order('created_at', { ascending: false }),
+      supabase.from('platform_listings').select('*'),
+      supabase.from('orders').select('*'),
+    ])
 
   if (error) {
     return (
@@ -40,13 +90,59 @@ export default async function ListingsPage() {
     byItem.set(listing.inventory_id, existing)
   }
 
+  // Most recent order per item - an item can in principle sell more than
+  // once if it was relisted after a cancelled sale.
+  const orderByItem = new Map<string, Order>()
+  for (const order of (orders ?? []) as Order[]) {
+    if (!order.inventory_id) continue
+    const seen = orderByItem.get(order.inventory_id)
+    if (!seen || (order.created_at ?? '') > (seen.created_at ?? '')) {
+      orderByItem.set(order.inventory_id, order)
+    }
+  }
+
   const inventory = (items ?? []) as Inventory[]
+
+  const sold = inventory.filter((i) => i.status === 'sold')
+  const totalProfit = sold.reduce((sum, item) => {
+    const profit = orderByItem.get(item.id)?.profit
+    return profit == null ? sum : sum + Number(profit)
+  }, 0)
+  const profitKnown = sold.filter(
+    (i) => orderByItem.get(i.id)?.profit != null,
+  ).length
 
   return (
     <div>
-      <div className="flex items-baseline justify-between">
+      <div className="flex flex-wrap items-baseline justify-between gap-2">
         <h1 className="text-xl font-semibold tracking-tight">Listings</h1>
-        <span className="text-sm text-neutral-500">{inventory.length} items</span>
+        <span className="text-sm text-neutral-500">
+          {inventory.length} items
+          {sold.length > 0 ? (
+            <>
+              {' · '}
+              {sold.length} sold
+              {profitKnown > 0 ? (
+                <>
+                  {' · '}
+                  <span
+                    className={
+                      totalProfit >= 0 ? 'text-green-700' : 'text-red-600'
+                    }
+                  >
+                    {money(totalProfit)} profit
+                  </span>
+                  {profitKnown < sold.length ? (
+                    <span className="text-neutral-400">
+                      {' '}
+                      (from {profitKnown}/{sold.length})
+                    </span>
+                  ) : null}
+                </>
+              ) : null}
+            </>
+          ) : null}
+        </span>
       </div>
 
       {inventory.length === 0 ? (
@@ -110,10 +206,15 @@ export default async function ListingsPage() {
                   )}
                 </div>
 
+                {item.status === 'sold' ? (
+                  <ProfitLine item={item} order={orderByItem.get(item.id)} />
+                ) : null}
+
                 <div className="mt-3 border-t border-neutral-100 pt-3">
                   <ItemActions
                     inventoryId={item.id}
                     isSold={item.status === 'sold'}
+                    hasPurchaseCost={item.purchase_cost !== null}
                   />
                 </div>
               </li>

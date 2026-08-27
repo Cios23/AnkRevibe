@@ -64,6 +64,10 @@ export type Order = {
   shipped_at: string | null
   tracking_number: string | null
   created_at: string | null
+  /** Estimated marketplace fee at sale time. Added by migration 0002. */
+  platform_fee: number | null
+  /** sale_price - platform_fee - purchase_cost, at sale time. */
+  profit: number | null
 }
 
 export type InventoryHealthFlag = {

@@ -2,6 +2,7 @@ import 'server-only'
 
 import type { SupabaseClient } from '@supabase/supabase-js'
 
+import { computeProfit } from '@/lib/fees'
 import { getAdapter as defaultGetAdapter } from '@/lib/platforms'
 import type { PlatformAdapter } from '@/lib/platforms/adapter'
 import type { ListingContext } from '@/lib/platforms/adapter'
@@ -77,6 +78,23 @@ async function loadExistingListingIds(
   return new Map((data ?? []).map((r) => [r.platform, r.platform_listing_id]))
 }
 
+/**
+ * Refusing to list without a cost basis is a business rule, not a
+ * validation nicety: an item listed with no purchase_cost cannot have its
+ * profit computed when it sells, and cannot be reasoned about by the
+ * offer automation - which would silently skip it forever.
+ */
+export class MissingPurchaseCostError extends Error {
+  constructor(readonly inventoryId: string, readonly title: string | null) {
+    super(
+      `Cannot crosspost "${title ?? inventoryId}": purchase_cost is not set. ` +
+        `Set a purchase cost on the item first - without it we cannot ` +
+        `compute profit when it sells or evaluate offers against margin.`,
+    )
+    this.name = 'MissingPurchaseCostError'
+  }
+}
+
 export type CrosspostResult = {
   platform: Platform
   status: 'active' | 'error'
@@ -97,6 +115,12 @@ export async function crosspost(
 ): Promise<CrosspostResult[]> {
   const getAdapter = deps.getAdapter ?? defaultGetAdapter
   const item = await loadItem(supabase, inventoryId)
+
+  // Blocks every platform, before any marketplace call is made.
+  if (item.purchase_cost === null || item.purchase_cost === undefined) {
+    throw new MissingPurchaseCostError(inventoryId, item.title)
+  }
+
   const photos = await loadPhotos(supabase, inventoryId)
   const existing = await loadExistingListingIds(supabase, inventoryId)
   const results: CrosspostResult[] = []
@@ -154,6 +178,9 @@ export type SaleResult = {
   inventoryId: string
   soldPlatform: Platform
   orderId: string | null
+  /** null when purchase_cost is unknown - never guessed. */
+  profit: number | null
+  platformFee: number | null
   delisted: Array<{ platform: string; status: 'delisted' | 'error'; error?: string }>
 }
 
@@ -176,6 +203,7 @@ export async function recordSale(
 ): Promise<SaleResult> {
   const getAdapter = deps.getAdapter ?? defaultGetAdapter
   const soldAt = new Date().toISOString()
+  const item = await loadItem(supabase, inventoryId)
 
   const { error: inventoryError } = await supabase
     .from('inventory')
@@ -188,17 +216,39 @@ export async function recordSale(
     .eq('id', inventoryId)
   if (inventoryError) throw new Error(inventoryError.message)
 
-  const { data: order, error: orderError } = await supabase
+  // Booked at sale time so a later fee-rate change cannot restate history.
+  const breakdown = computeProfit(soldPlatform, salePrice, item.purchase_cost)
+
+  const orderRow: Record<string, unknown> = {
+    inventory_id: inventoryId,
+    platform: soldPlatform,
+    sale_price: salePrice,
+    buyer_info: buyerInfo,
+    status: 'pending',
+  }
+  if (breakdown) {
+    orderRow.platform_fee = breakdown.fee
+    orderRow.profit = breakdown.profit
+  }
+
+  let { data: order, error: orderError } = await supabase
     .from('orders')
-    .insert({
-      inventory_id: inventoryId,
-      platform: soldPlatform,
-      sale_price: salePrice,
-      buyer_info: buyerInfo,
-      status: 'pending',
-    })
+    .insert(orderRow)
     .select('id')
     .single()
+
+  // Migration 0002 adds platform_fee/profit. If it has not been applied,
+  // record the sale anyway - losing a sale over a reporting column would
+  // be a far worse failure than losing the profit figure.
+  if (orderError && /platform_fee|profit|PGRST204/i.test(orderError.message)) {
+    delete orderRow.platform_fee
+    delete orderRow.profit
+    ;({ data: order, error: orderError } = await supabase
+      .from('orders')
+      .insert(orderRow)
+      .select('id')
+      .single())
+  }
   if (orderError) throw new Error(orderError.message)
 
   const { data: listings, error: listingsError } = await supabase
@@ -238,6 +288,8 @@ export async function recordSale(
     inventoryId,
     soldPlatform,
     orderId: order?.id ?? null,
+    profit: breakdown?.profit ?? null,
+    platformFee: breakdown?.fee ?? null,
     delisted,
   }
 }

@@ -1,7 +1,12 @@
 import { test, describe } from 'node:test'
 import assert from 'node:assert/strict'
 
-import { crosspost, recordSale, relist } from '../lib/operations'
+import {
+  crosspost,
+  recordSale,
+  relist,
+  MissingPurchaseCostError,
+} from '../lib/operations'
 import type { ListingContext, PlatformAdapter } from '../lib/platforms/adapter'
 import type { Platform } from '../lib/types'
 import { FakeSupabase, asClient } from './fake-supabase.mts'
@@ -69,6 +74,7 @@ const ITEM = {
   id: 'item-1',
   title: '90s Levi’s Denim Jacket',
   status: 'draft',
+  purchase_cost: 18,
   ebay_price: 78,
   poshmark_price: 82,
   depop_price: 75,
@@ -411,5 +417,121 @@ describe('relist', () => {
 
     assert.equal(results.find((r) => r.platform === 'ebay')?.status, 'error')
     assert.equal(results.find((r) => r.platform === 'depop')?.status, 'active')
+  })
+})
+
+
+// ------------------------------------------------- purchase_cost required
+
+describe('crosspost requires a cost basis', () => {
+  test('refuses to list an item with no purchase_cost', async () => {
+    const db = seedDb({ inventory: [{ ...ITEM, purchase_cost: null }] })
+    const { registry, getAdapter } = makeAdapters()
+
+    await assert.rejects(
+      () => crosspost(asClient(db), 'item-1', ['ebay'], { getAdapter }),
+      MissingPurchaseCostError,
+    )
+
+    // The block must happen before any marketplace call.
+    assert.equal(registry.ebay.calls.length, 0)
+    assert.equal(db.table('platform_listings').length, 0)
+  })
+
+  test('the error names the item and says what to do', async () => {
+    const db = seedDb({ inventory: [{ ...ITEM, purchase_cost: null }] })
+    const { getAdapter } = makeAdapters()
+
+    await assert.rejects(
+      () => crosspost(asClient(db), 'item-1', ['ebay'], { getAdapter }),
+      (err: Error) => {
+        assert.match(err.message, /Levi/, 'should name the item')
+        assert.match(err.message, /purchase_cost/, 'should name the field')
+        assert.match(err.message, /Set a purchase cost/, 'should say what to do')
+        return true
+      },
+    )
+  })
+
+  test('blocks every platform, not just the first', async () => {
+    const db = seedDb({ inventory: [{ ...ITEM, purchase_cost: null }] })
+    const { registry, getAdapter } = makeAdapters()
+
+    await assert.rejects(() =>
+      crosspost(asClient(db), 'item-1', ['ebay', 'poshmark', 'depop'], {
+        getAdapter,
+      }),
+    )
+    for (const p of ['ebay', 'poshmark', 'depop']) {
+      assert.equal(registry[p].calls.length, 0, `${p} should not be called`)
+    }
+  })
+
+  test('a zero cost is a real cost and does NOT block', async () => {
+    const db = seedDb({ inventory: [{ ...ITEM, purchase_cost: 0 }] })
+    const { getAdapter } = makeAdapters()
+    const results = await crosspost(asClient(db), 'item-1', ['ebay'], { getAdapter })
+    assert.equal(results[0].status, 'active')
+  })
+})
+
+// ------------------------------------------------------------- profit
+
+describe('recordSale computes profit', () => {
+  test('stores profit and fee on the order', async () => {
+    const db = seedCrossposted()
+    const { getAdapter } = makeAdapters()
+
+    // $78 on eBay: 13.25% = 10.34 fee, $18 cost -> 49.66
+    const result = await recordSale(asClient(db), 'item-1', 'ebay', 78, null, {
+      getAdapter,
+    })
+
+    assert.equal(result.platformFee, 10.34)
+    assert.equal(result.profit, 49.66)
+
+    const order = db.table('orders')[0]
+    assert.equal(order.platform_fee, 10.34)
+    assert.equal(order.profit, 49.66)
+  })
+
+  test('uses the SELLING platform’s fee, not a default', async () => {
+    const db = seedCrossposted()
+    const { getAdapter } = makeAdapters()
+
+    // Same $78 on Depop: 10% = 7.80 fee -> 52.20
+    const result = await recordSale(asClient(db), 'item-1', 'depop', 78, null, {
+      getAdapter,
+    })
+    assert.equal(result.platformFee, 7.8)
+    assert.equal(result.profit, 52.2)
+  })
+
+  test('records a loss as negative rather than clamping', async () => {
+    const db = seedCrossposted()
+    db.table('inventory')[0].purchase_cost = 100
+    const { getAdapter } = makeAdapters()
+
+    const result = await recordSale(asClient(db), 'item-1', 'ebay', 78, null, {
+      getAdapter,
+    })
+    assert.ok(result.profit! < 0, 'a bad sale must show as a loss')
+  })
+
+  test('a sale without purchase_cost still records, with null profit', async () => {
+    // Items listed before the cost rule existed can still sell; losing the
+    // sale over a missing reporting field would be far worse.
+    const db = seedCrossposted()
+    db.table('inventory')[0].purchase_cost = null
+    const { getAdapter } = makeAdapters()
+
+    const result = await recordSale(asClient(db), 'item-1', 'ebay', 78, null, {
+      getAdapter,
+    })
+
+    assert.equal(result.profit, null)
+    assert.equal(result.platformFee, null)
+    assert.equal(db.table('orders').length, 1, 'the sale is still recorded')
+    assert.equal(db.table('inventory')[0].status, 'sold')
   })
 })

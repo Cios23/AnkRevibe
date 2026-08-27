@@ -7,16 +7,40 @@ import { crosspost, recordSale, relist } from '@/lib/operations'
 import { runHealthCheck } from '@/lib/health'
 import { PLATFORMS, type Platform } from '@/lib/types'
 
-export async function crosspostAction(inventoryId: string) {
+export type ActionResult = { ok: true } | { ok: false; error: string }
+
+export async function crosspostAction(
+  inventoryId: string,
+): Promise<ActionResult> {
   const supabase = createClient()
-  await crosspost(supabase, inventoryId, PLATFORMS)
+  try {
+    await crosspost(supabase, inventoryId, PLATFORMS)
+  } catch (cause) {
+    // Surfaced in the UI rather than thrown, so a missing cost basis reads
+    // as an instruction instead of a crash.
+    return {
+      ok: false,
+      error: cause instanceof Error ? cause.message : String(cause),
+    }
+  }
   revalidatePath('/dashboard/listings')
+  return { ok: true }
 }
 
-export async function relistAction(inventoryId: string) {
+export async function relistAction(
+  inventoryId: string,
+): Promise<ActionResult> {
   const supabase = createClient()
-  await relist(supabase, inventoryId)
+  try {
+    await relist(supabase, inventoryId)
+  } catch (cause) {
+    return {
+      ok: false,
+      error: cause instanceof Error ? cause.message : String(cause),
+    }
+  }
   revalidatePath('/dashboard/listings')
+  return { ok: true }
 }
 
 /**
