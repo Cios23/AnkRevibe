@@ -18,7 +18,7 @@
     "Clothing, Shoes & Accessories:Men:Men's Clothing:Coats, Jackets & Vests|Men": [
       "Men",
       "Jackets & Coats",
-      "Bomber & Varsity"
+      "None"
     ],
     "Clothing, Shoes & Accessories:Men:Men's Clothing:Shirts:Polos|Men": [
       "Men",
@@ -38,7 +38,12 @@
     "Clothing, Shoes & Accessories:Men:Men's Clothing:Activewear:Activewear Jackets|Men": [
       "Men",
       "Jackets & Coats",
-      "Bomber & Varsity"
+      "None"
+    ],
+    "Sporting Goods:Hunting:Clothing, Shoes & Accessories:Coveralls|Boys": [
+      "Kids",
+      "Bottoms",
+      "Overalls"
     ],
     "Sports Mem, Cards & Fan Shop:Fan Apparel & Souvenirs:Hockey-NHL|Unisex Adult": [
       "Men",
@@ -60,10 +65,15 @@
       "Jeans",
       "Straight"
     ],
+    "Clothing, Shoes & Accessories:Specialty:Vintage:Children's Vintage Clothing:Jumpsuits & Rompers|Boys": [
+      "Kids",
+      "Bottoms",
+      "Overalls"
+    ],
     "Clothing, Shoes & Accessories:Baby:Baby & Toddler Clothing:One-Pieces|Unisex Baby & Toddler": [
       "Kids",
-      "Baby",
-      "One Pieces"
+      "One Pieces",
+      "Bodysuits"
     ],
     "Clothing, Shoes & Accessories:Specialty:Vintage:Men's Vintage Clothing:Casual Shirts|": [
       "Men",
@@ -72,13 +82,13 @@
     ],
     "Clothing, Shoes & Accessories:Men:Men's Clothing:Activewear:Hoodies & Sweatshirts|Men": [
       "Men",
-      "Sweaters",
-      "Zip Up"
+      "Shirts",
+      "Sweatshirts & Hoodies"
     ],
     "Clothing, Shoes & Accessories:Men:Men's Clothing:Shirts:T-Shirts|Teens": [
       "Kids",
-      "Boys",
-      "Shirts & Tops"
+      "Shirts & Tops",
+      "Tees - Short Sleeve"
     ],
     "Sports Mem, Cards & Fan Shop:Fan Apparel & Souvenirs:Football-NFL|Unisex Adult": [
       "Men",
@@ -102,23 +112,23 @@
     ],
     "Clothing, Shoes & Accessories:Women:Women's Clothing:Activewear:Activewear Pants|Women": [
       "Women",
-      "Athletic Apparel",
-      "Pants & Jumpsuits"
+      "Pants & Jumpsuits",
+      "Track Pants & Joggers"
     ],
     "Clothing, Shoes & Accessories:Women:Women's Clothing:Activewear:Activewear Tops|Women": [
       "Women",
-      "Athletic Apparel",
-      "Tops"
+      "Tops",
+      "Tees - Short Sleeve"
     ],
     "Clothing, Shoes & Accessories:Baby:Baby & Toddler Clothing:Outfits & Sets|Unisex Baby & Toddler": [
       "Kids",
-      "Baby",
-      "One Pieces"
+      "One Pieces",
+      "Bodysuits"
     ],
     "Clothing, Shoes & Accessories:Women:Women's Clothing:Coats, Jackets & Vests|Unisex Adults": [
       "Women",
       "Jackets & Coats",
-      "Utility Jackets"
+      "None"
     ],
     "Clothing, Shoes & Accessories:Women:Women's Shoes:Athletic Shoes|Women": [
       "Women",
@@ -128,12 +138,12 @@
     "Clothing, Shoes & Accessories:Women:Women's Clothing:Coats, Jackets & Vests|Women": [
       "Women",
       "Jackets & Coats",
-      "Utility Jackets"
+      "None"
     ],
     "Clothing, Shoes & Accessories:Kids:Boys:Boys' Clothing (Sizes 4 & Up):Sweatshirts & Hoodies|Boys": [
       "Kids",
-      "Boys",
-      "Shirts & Tops"
+      "Shirts & Tops",
+      "Sweatshirts & Hoodies"
     ],
     "Clothing, Shoes & Accessories:Women:Women's Clothing:Jeans|Women": [
       "Women",
@@ -147,8 +157,8 @@
     ],
     "Clothing, Shoes & Accessories:Kids:Girls:Girls' Clothing (Sizes 4 & Up):Dresses|Does not apply": [
       "Kids",
-      "Girls",
-      "Dresses"
+      "Dresses",
+      "Casual"
     ],
     "Clothing, Shoes & Accessories:Men:Men's Clothing:Activewear:Activewear Pants|Men": [
       "Men",
@@ -157,13 +167,13 @@
     ],
     "Clothing, Shoes & Accessories:Baby:Baby & Toddler Clothing:Sleepwear|Unisex Baby & Toddler": [
       "Kids",
-      "Baby",
-      "Pajamas"
+      "Pajamas",
+      "Sleep Sacks"
     ],
     "Clothing, Shoes & Accessories:Men:Men's Shoes:Casual Shoes|Teens": [
       "Kids",
-      "Boys",
-      "Shoes"
+      "Shoes",
+      "Sneakers"
     ],
     "Clothing, Shoes & Accessories:Women:Women's Clothing:Skirts|Women": [
       "Women",
@@ -172,13 +182,13 @@
     ],
     "Clothing, Shoes & Accessories:Baby:Baby & Toddler Clothing:Outfits & Sets|Boys": [
       "Kids",
-      "Baby",
-      "One Pieces"
+      "One Pieces",
+      "Bodysuits"
     ],
     "Clothing, Shoes & Accessories:Kids:Unisex Kids:Unisex Kids' Shoes|Unisex Kids": [
       "Kids",
-      "Boys",
-      "Shoes"
+      "Shoes",
+      "Sneakers"
     ],
     "Clothing, Shoes & Accessories:Women:Women's Accessories:Hats|Women": [
       "Women",
@@ -212,8 +222,8 @@
     ],
     "Clothing, Shoes & Accessories:Kids:Unisex Kids:Unisex Kids' Clothing (Sizes 4 & Up):Tops & T-Shirts|Unisex Kids": [
       "Kids",
-      "Boys",
-      "Shirts & Tops"
+      "Shirts & Tops",
+      "Tees - Short Sleeve"
     ],
     "Clothing, Shoes & Accessories:Men:Men's Accessories:Hats|Unisex Adults": [
       "Men",
@@ -232,8 +242,8 @@
     ],
     "Clothing, Shoes & Accessories:Kids:Girls:Girls' Clothing (Sizes 4 & Up):Outerwear|Girls": [
       "Kids",
-      "Girls",
-      "Jackets & Coats"
+      "Jackets & Coats",
+      "None"
     ],
     "Clothing, Shoes & Accessories:Men:Men's Clothing:Swimwear|Men": [
       "Men",
@@ -277,8 +287,8 @@
     ],
     "Clothing, Shoes & Accessories:Kids:Girls:Girls' Shoes|Girls": [
       "Kids",
-      "Girls",
-      "Shoes"
+      "Shoes",
+      "Sneakers"
     ],
     "Clothing, Shoes & Accessories:Men:Men's Clothing:Activewear:Activewear Shorts|Men": [
       "Men",
@@ -287,13 +297,13 @@
     ],
     "Clothing, Shoes & Accessories:Kids:Unisex Kids:Unisex Kids' Clothing (Sizes 4 & Up):Outerwear|Unisex Kids": [
       "Kids",
-      "Boys",
-      "Jackets & Coats"
+      "Jackets & Coats",
+      "None"
     ],
     "Clothing, Shoes & Accessories:Women:Women's Clothing:Activewear:Activewear Jackets|Women": [
       "Women",
       "Jackets & Coats",
-      "Utility Jackets"
+      "None"
     ],
     "Clothing, Shoes & Accessories:Women:Women's Shoes:Comfort Shoes|Women": [
       "Women",
@@ -307,8 +317,8 @@
     ],
     "Sports Mem, Cards & Fan Shop:Fan Apparel & Souvenirs:Basketball-NBA|Boys": [
       "Kids",
-      "Boys",
-      "Shirts & Tops"
+      "Shirts & Tops",
+      "Tees - Short Sleeve"
     ],
     "Clothing, Shoes & Accessories:Men:Men's Clothing:Shorts|Men": [
       "Men",
@@ -322,12 +332,12 @@
     ],
     "Sports Mem, Cards & Fan Shop:Fan Apparel & Souvenirs:Basketball-NBA|Unisex Children": [
       "Kids",
-      "Boys",
-      "Shirts & Tops"
+      "Shirts & Tops",
+      "Tees - Short Sleeve"
     ],
     "Clothing, Shoes & Accessories:Baby:Baby & Toddler Clothing:Sweaters|Unisex Baby & Toddler": [
       "Kids",
-      "Baby",
+      "Shirts & Tops",
       "Sweaters"
     ],
     "Clothing, Shoes & Accessories:Specialty:Vintage:Vintage Accessories:Men's Hats|": [
@@ -337,13 +347,13 @@
     ],
     "Clothing, Shoes & Accessories:Men:Men's Clothing:Coats, Jackets & Vests|Teens": [
       "Kids",
-      "Boys",
-      "Jackets & Coats"
+      "Jackets & Coats",
+      "None"
     ],
     "Sports Mem, Cards & Fan Shop:Fan Apparel & Souvenirs:Football-NFL|Unisex Children": [
       "Kids",
-      "Boys",
-      "Shirts & Tops"
+      "Shirts & Tops",
+      "Tees - Short Sleeve"
     ],
     "Sports Mem, Cards & Fan Shop:Fan Apparel & Souvenirs:Football-NFL|Men": [
       "Men",
@@ -352,8 +362,8 @@
     ],
     "Clothing, Shoes & Accessories:Kids:Boys:Boys' Clothing (Sizes 4 & Up):Pants|Boys": [
       "Kids",
-      "Boys",
-      "Bottoms"
+      "Bottoms",
+      "Casual"
     ],
     "Sporting Goods:Team Sports:Baseball & Softball:Clothing, Shoes & Accessories:Men's:Baseball Pants|": [
       "Men",
@@ -377,8 +387,8 @@
     ],
     "Clothing, Shoes & Accessories:Kids:Boys:Boys' Clothing (Sizes 4 & Up):Tops, Shirts & T-Shirts|Boys": [
       "Kids",
-      "Boys",
-      "Shirts & Tops"
+      "Shirts & Tops",
+      "Tees - Short Sleeve"
     ],
     "Sports Mem, Cards & Fan Shop:Fan Apparel & Souvenirs:Basketball-NBA|Men": [
       "Men",
@@ -387,8 +397,8 @@
     ],
     "Clothing, Shoes & Accessories:Kids:Boys:Boys' Shoes|Boys": [
       "Kids",
-      "Boys",
-      "Shoes"
+      "Shoes",
+      "Sneakers"
     ],
     "Sporting Goods:Golf:Golf Clothing, Shoes & Accessories:Men's Golf Clothing & Shoes:Pants|Men": [
       "Men",

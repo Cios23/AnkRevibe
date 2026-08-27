@@ -142,19 +142,41 @@ export function toInternalCategory(
 
 type Tree = Partial<Record<GarmentKey, Partial<Record<Department, string[]>>>>
 
-/** Poshmark: Department > Category > Subcategory. */
+/**
+ * Poshmark: Department > Category > Subcategory.
+ *
+ * VERIFIED against the live tree scraped from create-listing on 2026-08-27
+ * (6 departments, 87 categories, 712 subcategories). Every path below exists
+ * in that tree; `npm run poshmark:verify` re-checks them.
+ *
+ * Two things the real tree corrected in the previous hand-written table:
+ *
+ *   - Kids is FLAT. There is no Boys/Girls/Baby split; the department is
+ *     "Kids" and the garment type is the category. Modelling those as
+ *     separate departments accounted for 20 of its 25 wrong paths.
+ *   - Women has no "Athletic Apparel" category. Activewear sits under the
+ *     ordinary Tops / Pants & Jumpsuits.
+ *
+ * "None" is a real option Poshmark offers in 79 of 87 categories, used here
+ * where our garment key is too coarse to choose honestly - a denim jacket
+ * filed under "Puffers" is worse than one filed under none. Subcategory is
+ * optional on Poshmark, so this is a supported choice rather than a gap.
+ */
 const POSHMARK: Tree = {
   tshirts: {
     men: ['Men', 'Shirts', 'Tees - Short Sleeve'],
     women: ['Women', 'Tops', 'Tees - Short Sleeve'],
-    boys: ['Kids', 'Boys', 'Shirts & Tops'],
-    girls: ['Kids', 'Girls', 'Shirts & Tops'],
-    'unisex-kids': ['Kids', 'Boys', 'Shirts & Tops'],
-    baby: ['Kids', 'Baby', 'One Pieces'],
+    boys: ['Kids', 'Shirts & Tops', 'Tees - Short Sleeve'],
+    girls: ['Kids', 'Shirts & Tops', 'Tees - Short Sleeve'],
+    'unisex-kids': ['Kids', 'Shirts & Tops', 'Tees - Short Sleeve'],
+    baby: ['Kids', 'One Pieces', 'Bodysuits'],
   },
   'casual-shirts': {
     men: ['Men', 'Shirts', 'Casual Button Down Shirts'],
     women: ['Women', 'Tops', 'Button Down Shirts'],
+    boys: ['Kids', 'Shirts & Tops', 'Button Down Shirts'],
+    girls: ['Kids', 'Shirts & Tops', 'Button Down Shirts'],
+    'unisex-kids': ['Kids', 'Shirts & Tops', 'Button Down Shirts'],
   },
   'dress-shirts': {
     men: ['Men', 'Shirts', 'Dress Shirts'],
@@ -163,70 +185,127 @@ const POSHMARK: Tree = {
   polos: {
     men: ['Men', 'Shirts', 'Polos'],
     women: ['Women', 'Tops', 'Tees - Short Sleeve'],
+    boys: ['Kids', 'Shirts & Tops', 'Polos'],
+    'unisex-kids': ['Kids', 'Shirts & Tops', 'Polos'],
   },
   sweaters: {
     men: ['Men', 'Sweaters', 'Crewneck'],
     women: ['Women', 'Sweaters', 'Crew & Scoop Necks'],
-    baby: ['Kids', 'Baby', 'Sweaters'],
+    boys: ['Kids', 'Shirts & Tops', 'Sweaters'],
+    girls: ['Kids', 'Shirts & Tops', 'Sweaters'],
+    'unisex-kids': ['Kids', 'Shirts & Tops', 'Sweaters'],
+    baby: ['Kids', 'Shirts & Tops', 'Sweaters'],
   },
   hoodies: {
-    men: ['Men', 'Sweaters', 'Zip Up'],
+    men: ['Men', 'Shirts', 'Sweatshirts & Hoodies'],
     women: ['Women', 'Tops', 'Sweatshirts & Hoodies'],
-    boys: ['Kids', 'Boys', 'Shirts & Tops'],
-    girls: ['Kids', 'Girls', 'Shirts & Tops'],
-    'unisex-kids': ['Kids', 'Boys', 'Shirts & Tops'],
+    boys: ['Kids', 'Shirts & Tops', 'Sweatshirts & Hoodies'],
+    girls: ['Kids', 'Shirts & Tops', 'Sweatshirts & Hoodies'],
+    'unisex-kids': ['Kids', 'Shirts & Tops', 'Sweatshirts & Hoodies'],
   },
   'coats-jackets': {
-    men: ['Men', 'Jackets & Coats', 'Bomber & Varsity'],
-    women: ['Women', 'Jackets & Coats', 'Utility Jackets'],
-    boys: ['Kids', 'Boys', 'Jackets & Coats'],
-    girls: ['Kids', 'Girls', 'Jackets & Coats'],
-    'unisex-kids': ['Kids', 'Boys', 'Jackets & Coats'],
+    // Generic on purpose: the category spans puffers, pea coats, jean
+    // jackets, trench coats and more, and our key cannot tell them apart.
+    men: ['Men', 'Jackets & Coats', 'None'],
+    women: ['Women', 'Jackets & Coats', 'None'],
+    boys: ['Kids', 'Jackets & Coats', 'None'],
+    girls: ['Kids', 'Jackets & Coats', 'None'],
+    'unisex-kids': ['Kids', 'Jackets & Coats', 'None'],
   },
   jeans: {
     men: ['Men', 'Jeans', 'Straight'],
     women: ['Women', 'Jeans', 'Straight Leg'],
+    boys: ['Kids', 'Bottoms', 'Jeans'],
+    girls: ['Kids', 'Bottoms', 'Jeans'],
+    'unisex-kids': ['Kids', 'Bottoms', 'Jeans'],
   },
   pants: {
     men: ['Men', 'Pants', 'Chinos & Khakis'],
     women: ['Women', 'Pants & Jumpsuits', 'Trousers'],
-    boys: ['Kids', 'Boys', 'Bottoms'],
+    boys: ['Kids', 'Bottoms', 'Casual'],
+    girls: ['Kids', 'Bottoms', 'Casual'],
+    'unisex-kids': ['Kids', 'Bottoms', 'Casual'],
   },
   shorts: {
     men: ['Men', 'Shorts', 'Athletic'],
     women: ['Women', 'Shorts', 'Athletic Shorts'],
+    boys: ['Kids', 'Bottoms', 'Shorts'],
+    girls: ['Kids', 'Bottoms', 'Shorts'],
+    'unisex-kids': ['Kids', 'Bottoms', 'Shorts'],
   },
-  skirts: { women: ['Women', 'Skirts', 'Midi'] },
-  dresses: { women: ['Women', 'Dresses', 'Midi'], girls: ['Kids', 'Girls', 'Dresses'] },
+  skirts: {
+    women: ['Women', 'Skirts', 'Midi'],
+    girls: ['Kids', 'Bottoms', 'Skirts'],
+  },
+  dresses: {
+    women: ['Women', 'Dresses', 'Midi'],
+    girls: ['Kids', 'Dresses', 'Casual'],
+  },
   'activewear-tops': {
     men: ['Men', 'Shirts', 'Tees - Short Sleeve'],
-    women: ['Women', 'Athletic Apparel', 'Tops'],
+    women: ['Women', 'Tops', 'Tees - Short Sleeve'],
   },
   'activewear-pants': {
     men: ['Men', 'Pants', 'Sweatpants & Joggers'],
-    women: ['Women', 'Athletic Apparel', 'Pants & Jumpsuits'],
+    women: ['Women', 'Pants & Jumpsuits', 'Track Pants & Joggers'],
+    boys: ['Kids', 'Bottoms', 'Sweatpants & Joggers'],
+    'unisex-kids': ['Kids', 'Bottoms', 'Sweatpants & Joggers'],
   },
-  swimwear: { men: ['Men', 'Swim', 'Swim Trunks'], women: ['Women', 'Swim', 'One Pieces'] },
-  sleepwear: { women: ['Women', 'Intimates & Sleepwear', 'Pajamas'], baby: ['Kids', 'Baby', 'Pajamas'] },
-  suits: { men: ['Men', 'Suits & Blazers', 'Suits'] },
+  swimwear: {
+    men: ['Men', 'Swim', 'Swim Trunks'],
+    women: ['Women', 'Swim', 'One Pieces'],
+    boys: ['Kids', 'Swim', 'Swim Trunks'],
+    girls: ['Kids', 'Swim', 'One Piece'],
+    'unisex-kids': ['Kids', 'Swim', 'None'],
+  },
+  sleepwear: {
+    women: ['Women', 'Intimates & Sleepwear', 'Pajamas'],
+    boys: ['Kids', 'Pajamas', 'Pajama Sets'],
+    girls: ['Kids', 'Pajamas', 'Pajama Sets'],
+    'unisex-kids': ['Kids', 'Pajamas', 'Pajama Sets'],
+    baby: ['Kids', 'Pajamas', 'Sleep Sacks'],
+  },
+  suits: {
+    men: ['Men', 'Suits & Blazers', 'Suits'],
+  },
   'athletic-shoes': {
     men: ['Men', 'Shoes', 'Athletic Shoes'],
     women: ['Women', 'Shoes', 'Athletic Shoes'],
-    boys: ['Kids', 'Boys', 'Shoes'],
-    girls: ['Kids', 'Girls', 'Shoes'],
-    'unisex-kids': ['Kids', 'Boys', 'Shoes'],
+    boys: ['Kids', 'Shoes', 'Sneakers'],
+    girls: ['Kids', 'Shoes', 'Sneakers'],
+    'unisex-kids': ['Kids', 'Shoes', 'Sneakers'],
   },
   'casual-shoes': {
     men: ['Men', 'Shoes', 'Sneakers'],
     women: ['Women', 'Shoes', 'Sneakers'],
-    boys: ['Kids', 'Boys', 'Shoes'],
-    girls: ['Kids', 'Girls', 'Shoes'],
-    'unisex-kids': ['Kids', 'Boys', 'Shoes'],
+    boys: ['Kids', 'Shoes', 'Sneakers'],
+    girls: ['Kids', 'Shoes', 'Sneakers'],
+    'unisex-kids': ['Kids', 'Shoes', 'Sneakers'],
+    baby: ['Kids', 'Shoes', 'Baby & Walker'],
   },
-  hats: { men: ['Men', 'Accessories', 'Hats'], women: ['Women', 'Accessories', 'Hats'] },
-  bags: { women: ['Women', 'Bags', 'Totes'] },
-  coveralls: { men: ['Men', 'Pants', 'Cargo'], 'unisex-kids': ['Kids', 'Boys', 'One Pieces'] },
-  onepiece: { baby: ['Kids', 'Baby', 'One Pieces'], 'unisex-kids': ['Kids', 'Boys', 'Matching Sets'] },
+  hats: {
+    men: ['Men', 'Accessories', 'Hats'],
+    women: ['Women', 'Accessories', 'Hats'],
+    boys: ['Kids', 'Accessories', 'Hats'],
+    girls: ['Kids', 'Accessories', 'Hats'],
+    'unisex-kids': ['Kids', 'Accessories', 'Hats'],
+  },
+  bags: {
+    women: ['Women', 'Bags', 'Totes'],
+    men: ['Men', 'Bags', 'Backpacks'],
+  },
+  coveralls: {
+    men: ['Men', 'Pants', 'Cargo'],
+    women: ['Women', 'Pants & Jumpsuits', 'Jumpsuits & Rompers'],
+    boys: ['Kids', 'Bottoms', 'Overalls'],
+    'unisex-kids': ['Kids', 'Bottoms', 'Overalls'],
+  },
+  onepiece: {
+    baby: ['Kids', 'One Pieces', 'Bodysuits'],
+    boys: ['Kids', 'Matching Sets', 'None'],
+    girls: ['Kids', 'Matching Sets', 'None'],
+    'unisex-kids': ['Kids', 'Matching Sets', 'None'],
+  },
 }
 
 /** Depop: Category > Subcategory > Type. */

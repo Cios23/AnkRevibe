@@ -20,7 +20,8 @@
     "ebay:bulk-publish": "tsx --conditions=react-server scripts/ebay-bulk-publish.mts",
     "ebay:reconcile": "tsx scripts/ebay-reconcile.mts",
     "prices:derive": "tsx scripts/derive-platform-prices.mts",
-    "crosslist:generate-map": "tsx scripts/generate-category-map.mts"
+    "crosslist:generate-map": "tsx scripts/generate-category-map.mts",
+    "poshmark:verify": "tsx scripts/verify-poshmark-categories.mts"
   },
   "dependencies": {
     "@supabase/ssr": "^0.12.5",

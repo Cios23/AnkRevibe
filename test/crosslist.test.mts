@@ -517,3 +517,51 @@ describe('mapListing validation', () => {
     assert.match(message, /price/)
   })
 })
+
+// ------------------------------------------ verified against the real tree
+
+describe('Poshmark paths match the scraped tree', () => {
+  test('Kids is flat - no Boys/Girls/Baby departments', () => {
+    // The real tree has one "Kids" department with garment categories under
+    // it. Modelling boys/girls/baby as departments produced 20 wrong paths.
+    for (const dept of ['Boys', 'Girls', 'Unisex Kids', 'Unisex Baby & Toddler']) {
+      const path = mapCategory(
+        'poshmark',
+        "Clothing, Shoes & Accessories:Kids:Boys:Boys' Clothing (Sizes 4 & Up):Tops, Shirts & T-Shirts",
+        dept,
+      )
+      if (path) assert.equal(path.path[0], 'Kids', `${dept} should land in Kids`)
+    }
+  })
+
+  test('womenswear activewear is under Tops, not Athletic Apparel', () => {
+    // "Athletic Apparel" does not exist in the real Women department.
+    const path = mapCategory(
+      'poshmark',
+      "Clothing, Shoes & Accessories:Women:Women's Clothing:Activewear:Activewear Tops",
+      'Women',
+    )
+    assert.ok(path)
+    assert.equal(path!.path[1], 'Tops')
+  })
+
+  test('mens hoodies live under Shirts, where Poshmark puts them', () => {
+    const path = mapCategory(
+      'poshmark',
+      "Clothing, Shoes & Accessories:Men:Men's Clothing:Activewear:Hoodies & Sweatshirts",
+      'Men',
+    )
+    assert.deepEqual(path!.path, ['Men', 'Shirts', 'Sweatshirts & Hoodies'])
+  })
+
+  test('a coarse garment key uses "None" rather than guessing a subcategory', () => {
+    // Our key cannot tell a denim jacket from a puffer, and filing it as the
+    // wrong one is worse than filing it as none. Poshmark offers "None".
+    const path = mapCategory(
+      'poshmark',
+      "Clothing, Shoes & Accessories:Men:Men's Clothing:Coats, Jackets & Vests",
+      'Men',
+    )
+    assert.deepEqual(path!.path, ['Men', 'Jackets & Coats', 'None'])
+  })
+})
