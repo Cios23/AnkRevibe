@@ -124,7 +124,7 @@
     const invUrl =
       cfg.SUPABASE_URL +
       "/rest/v1/inventory?select=id,title,brand,size,condition,description," +
-      "purchase_cost,poshmark_price,depop_price" +
+      "category,subcategory,purchase_cost,poshmark_price,depop_price" +
       "&status=eq.active&order=created_at.desc&limit=200";
 
     const res = await fetch(invUrl, { headers });
@@ -216,6 +216,16 @@
                 // map the background builds. See lib/sync.js.
                 purchaseCost:
                   item.purchase_cost == null ? null : Number(item.purchase_cost),
+                // Mapped server-side and baked into
+                // lib/category-map.generated.js, so the rules live in one
+                // place rather than being reimplemented in browser JS.
+                categoryPath: globalThis.AnkCategoryMap
+                  ? globalThis.AnkCategoryMap.lookup(
+                      platform,
+                      item.category,
+                      item.subcategory,
+                    )
+                  : null,
                 photos: item.photos,
               },
             },

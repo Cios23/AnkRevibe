@@ -9,7 +9,7 @@
     "lint": "next lint",
     "test:phash": "tsx scripts/phash.test.mts",
     "ebay:policies": "tsx scripts/ebay-policies.mts",
-    "test": "tsx --conditions=react-server --test --experimental-test-module-mocks test/health.test.mts test/operations.test.mts test/routes.test.mts test/ebay.test.mts test/ebay-oauth.test.mts test/margin.test.mts test/auth-bridge.test.mts test/fees.test.mts test/crosslist.test.mts test/depop-delist.test.mts",
+    "test": "tsx --conditions=react-server --test --experimental-test-module-mocks test/health.test.mts test/operations.test.mts test/routes.test.mts test/ebay.test.mts test/ebay-oauth.test.mts test/margin.test.mts test/auth-bridge.test.mts test/fees.test.mts test/crosslist.test.mts test/depop-delist.test.mts test/dropdown.test.mts",
     "ebay:auth": "tsx scripts/ebay-auth.mts",
     "ebay:categories": "tsx scripts/ebay-categories.mts",
     "ebay:locations": "tsx scripts/ebay-locations.mts",
@@ -19,7 +19,8 @@
     "ebay:live-test": "tsx --conditions=react-server scripts/ebay-live-test.mts",
     "ebay:bulk-publish": "tsx --conditions=react-server scripts/ebay-bulk-publish.mts",
     "ebay:reconcile": "tsx scripts/ebay-reconcile.mts",
-    "prices:derive": "tsx scripts/derive-platform-prices.mts"
+    "prices:derive": "tsx scripts/derive-platform-prices.mts",
+    "crosslist:generate-map": "tsx scripts/generate-category-map.mts"
   },
   "dependencies": {
     "@supabase/ssr": "^0.12.5",

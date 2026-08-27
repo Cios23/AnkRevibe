@@ -133,8 +133,30 @@ accumulates only as the extension observes crossposts. It does nothing until
 you have crosslisted to Depop through it — it cannot discover your existing
 Depop listings.
 
-**9. Selectors are unverified and dated.** Every CSS selector came from
-ResellOS and reflects whenever it last worked. Poshmark and Depop change their
+**9. Selectors are unverified and dated — with two exceptions.** Poshmark's
+category and subcategory containers are **observed**, not guessed:
+
+```
+div.listing-editor__category-container.listing-editor__input--half.va--t
+div.listing-editor__subcategory-container.listing-editor__input--half.va--t
+```
+
+They are Vue components, not native `<select>`, so `setNativeValue` does
+nothing to them — `lib/dropdown.js` clicks them open and clicks an option.
+The **department** tier (the third) was not observed and is inferred from
+the same naming convention.
+
+Category paths come from `lib/category-map.generated.js`, emitted by
+`npm run crosslist:generate-map` from `lib/crosslist` so the rules are not
+reimplemented in browser JS. It covers 139 category pairs; 67 are unmapped,
+almost all non-apparel with no clothing category on these platforms.
+
+Option matching **refuses ambiguity**: "Shirts" against both "Dress Shirts"
+and "Casual Button Down Shirts" picks neither and reports what was offered,
+since a wrong pick files the item under a category nobody chose.
+
+Every other CSS selector came from ResellOS and reflects whenever it last
+worked. Poshmark and Depop change their
 DOM frequently. Expect to fix selectors on first real use; each script has
 multi-selector fallback lists to soften that.
 
