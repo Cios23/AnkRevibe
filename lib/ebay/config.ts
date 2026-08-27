@@ -62,29 +62,16 @@ export function requireEnv(names: string[]): Record<string, string> {
 }
 
 /**
- * Business policy + location IDs required to publish an offer.
+ * Payment and return policies, which do not vary by item.
  *
- * FUTURE WORK: fulfillment policy is currently one flat default
- * ("Clothing Items"), but shipping cost on this account is banded by
- * garment weight and there are per-band policies already set up:
- *
- *   261742192018  T-Shirts/Shorts   $5
- *   261742395018  Sweatshirts       $8
- *   261742420018  Light Coats/Jeans $10
- *   261742440018  Heavy Coat
- *   262546430018  Free Apparel
- *
- * Picking per category (or per weight on the inventory row) would stop us
- * under-charging shipping on heavy items. Deliberately deferred.
+ * Fulfillment is NOT here: it depends on the garment, and picking it lives
+ * in lib/ebay/shipping.ts. A single flat shipping policy under-charges on a
+ * coat and over-charges on a t-shirt.
  */
-export function listingPolicyIds() {
-  const env = requireEnv([
-    'EBAY_FULFILLMENT_POLICY_ID',
-    'EBAY_PAYMENT_POLICY_ID',
-    'EBAY_RETURN_POLICY_ID',
-  ])
+export function listingPolicyIds(fulfillmentPolicyId: string) {
+  const env = requireEnv(['EBAY_PAYMENT_POLICY_ID', 'EBAY_RETURN_POLICY_ID'])
   return {
-    fulfillmentPolicyId: env.EBAY_FULFILLMENT_POLICY_ID,
+    fulfillmentPolicyId,
     paymentPolicyId: env.EBAY_PAYMENT_POLICY_ID,
     returnPolicyId: env.EBAY_RETURN_POLICY_ID,
   }

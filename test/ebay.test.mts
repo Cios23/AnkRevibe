@@ -3,7 +3,6 @@ import assert from 'node:assert/strict'
 
 process.env.EBAY_ENV = 'production'
 process.env.EBAY_MARKETPLACE_ID = 'EBAY_US'
-process.env.EBAY_FULFILLMENT_POLICY_ID = 'fp-1'
 process.env.EBAY_PAYMENT_POLICY_ID = 'pp-1'
 process.env.EBAY_RETURN_POLICY_ID = 'rp-1'
 process.env.EBAY_MERCHANT_LOCATION_KEY = 'main-warehouse'
@@ -420,11 +419,11 @@ describe('EbayAdapter.createListing', () => {
     const offer = calls.find((c) => c.method === 'POST' && /\/offer$/.test(c.url))!
     assert.equal(offer.body.pricingSummary.price.value, '78')
     assert.equal(offer.body.pricingSummary.price.currency, 'USD')
-    assert.deepEqual(offer.body.listingPolicies, {
-      fulfillmentPolicyId: 'fp-1',
-      paymentPolicyId: 'pp-1',
-      returnPolicyId: 'rp-1',
-    })
+    // Fulfillment now varies by garment; ITEM is a men's jacket, which
+    // bands to Lights Coats/Jeans rather than a flat default.
+    assert.equal(offer.body.listingPolicies.paymentPolicyId, 'pp-1')
+    assert.equal(offer.body.listingPolicies.returnPolicyId, 'rp-1')
+    assert.equal(offer.body.listingPolicies.fulfillmentPolicyId, '261742420018')
     assert.equal(offer.body.merchantLocationKey, 'main-warehouse')
     assert.equal(offer.body.categoryId, STATIC_CATEGORY_MAP['outerwear/mens'])
     assert.equal(offer.body.availableQuantity, 1)

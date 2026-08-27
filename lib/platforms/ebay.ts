@@ -10,6 +10,7 @@ import {
   conditionDescription,
   resolveConditionForCategory,
 } from '@/lib/ebay/conditions'
+import { resolveShippingPolicy } from '@/lib/ebay/shipping'
 import type {
   CreatedListing,
   DelistOutcome,
@@ -247,6 +248,9 @@ export class EbayAdapter implements PlatformAdapter {
   ): Promise<string> {
     const { item, price } = context
 
+    // Shipping policy is chosen per garment, not one flat default.
+    const shipping = resolveShippingPolicy(item)
+
     const payload = {
       sku,
       marketplaceId: marketplaceId(),
@@ -254,7 +258,7 @@ export class EbayAdapter implements PlatformAdapter {
       availableQuantity: 1,
       categoryId,
       listingDescription: buildDescription(item),
-      listingPolicies: listingPolicyIds(),
+      listingPolicies: listingPolicyIds(shipping.policyId),
       merchantLocationKey: merchantLocationKey(),
       pricingSummary: {
         price: { value: String(price), currency: CURRENCY() },
