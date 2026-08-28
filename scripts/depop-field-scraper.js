@@ -2,77 +2,72 @@
  * Depop listing-field scraper — paste into DevTools on
  * https://www.depop.com/products/create/ while logged in.
  *
- * Captures the options of every dropdown on the listing form, so our mapping
- * tables can be verified against real values instead of guessed - the same
- * exercise that found 25 wrong paths in the Poshmark table.
+ * CONFIRMED STRUCTURE (live DOM inspection)
+ * Every field is opened by an input:  input#{field}-input
+ * carrying the class _selectInput_1qbo3_84. So the triggers are known:
+ * group-input, brand-input, condition-input, colour-input, source-input,
+ * age-input, style-input.
  *
- * TWO MODES
+ * The OPTION rows are not knowable in advance: those classes are CSS-module
+ * hashes (_selectInput_1qbo3_84 is one), and a hash changes on every build.
+ * So rows are found structurally - by what appears when the field opens -
+ * rather than by a class name that would rot.
  *
- *   MODE = "discover"   Finds every field on the page and prints its id,
- *                       label and shape. Run this FIRST. It answers which
- *                       selectors to use and which fields are dropdowns at
- *                       all, without anyone having to read the DOM by hand.
- *
- *   MODE = "scrape"     Walks the fields listed in CONFIG.fields and
- *                       downloads their options as JSON.
- *
- * WHY DISCOVER EXISTS
- * The confirmed element ids for these fields did not survive the trip into
- * this file (only a "#group-men" fragment did), and guessing selectors is
- * exactly what produced a scrape of "Select Category" on Poshmark. Discovery
- * makes the ids an output rather than an input.
+ * ACCURACY OVER COMPLETION
+ * If a field cannot be opened, yields no rows, looks truncated, or looks
+ * virtualised, it is recorded in `problems` and its value is set to null -
+ * never to a partial array. Partial data is worse than absent data when it
+ * feeds a pipeline downstream: an empty list is obviously broken, whereas a
+ * list that is 60% complete looks fine and quietly mismaps every item it is
+ * missing. Re-running one field is cheap; finding a silent gap later is not.
  * ========================================================================= */
 (async function depopFieldScraper() {
   "use strict";
 
-  const MODE = "discover"; // "discover" | "scrape"
-
   const CONFIG = {
     /**
-     * Fields to scrape once their selectors are known.
-     *
-     * `hierarchical: true` means the control drills - department, then
-     * category, then subcategory - and is walked level by level. Everything
-     * else is opened once and read.
-     *
-     * Brand is deliberately ABSENT: on Depop it appears to be a free-text
-     * field with autocomplete rather than a fixed list, so there is nothing
-     * to enumerate and values pass straight through. Run the check in
-     * MODE "discover" output to confirm before adding it.
+     * All seven fields. `hierarchical` drills (department > category >
+     * subcategory); the rest are read in one open.
      */
     fields: [
-      { name: "category", selector: null, hierarchical: true },
-      { name: "condition", selector: null },
-      { name: "colour", selector: null },
-      { name: "source", selector: null },
-      { name: "age", selector: null },
-      { name: "style", selector: null },
+      { name: "category", input: "group-input", hierarchical: true },
+      { name: "brand", input: "brand-input", mayBeFreeText: true },
+      { name: "condition", input: "condition-input" },
+      { name: "colour", input: "colour-input" },
+      { name: "source", input: "source-input" },
+      { name: "age", input: "age-input" },
+      { name: "style", input: "style-input" },
     ],
 
-    /**
-     * Row selectors, most specific first. Depop's are not yet confirmed -
-     * the Poshmark ones are here as a starting point because both are
-     * conventional listbox markup.
-     */
-    rowSelectors: [
-      '[role="option"]',
-      '[role="menuitem"]',
-      ".dropdown__link",
-      ".dropdown__menu__item",
-      "li",
-    ],
-
-    openDelay: 800,
-    levelDelay: 600,
+    openDelay: 900,
+    levelDelay: 700,
     changeTimeout: 5000,
-    maxLabelLength: 60,
-    /** Rows that navigate rather than select. */
-    excludeRows: [/^all\b/i, /^select\b/i, /^choose\b/i, /^back$/i],
+    /** Longer than a label, shorter than a paragraph. */
+    maxLabelLength: 80,
+    /** Rows that navigate or reset rather than select. */
+    excludeRows: [/^all\b/i, /^select\b/i, /^choose\b/i, /^back$/i, /^none$/i],
+    /**
+     * A list longer than this is assumed virtualised - only what is rendered
+     * can be read, so the result would be partial. Reported, not returned.
+     */
+    suspiciouslyLarge: 400,
+    verbose: true,
   };
 
   const wait = (ms) => new Promise((r) => setTimeout(r, ms));
   const norm = (s) => String(s || "").replace(/\s+/g, " ").trim();
   const key = (s) => norm(s).toLowerCase();
+
+  /** Every failure, with enough detail to fix or re-run it. */
+  const problems = [];
+  const addProblem = (field, reason, detail) => {
+    problems.push({ field, reason, ...(detail ? { detail } : {}) });
+    console.warn(
+      "%c[problem] " + field + ": " + reason,
+      "color:#b91c1c;font-weight:700",
+      detail ?? ""
+    );
+  };
 
   function isVisible(el) {
     if (!el || !el.isConnected) return false;
@@ -82,147 +77,63 @@
     return style.visibility !== "hidden" && style.display !== "none";
   }
 
-  /** The visible label for a field, from whatever the markup offers. */
-  function labelFor(el) {
-    if (el.id) {
-      const bound = document.querySelector('label[for="' + CSS.escape(el.id) + '"]');
-      if (bound) return norm(bound.textContent);
-    }
-    const wrapper = el.closest("label");
-    if (wrapper) return norm(wrapper.textContent).slice(0, 60);
-    const aria = el.getAttribute("aria-label");
-    if (aria) return norm(aria);
-    return "";
-  }
-
-  // ------------------------------------------------------------- discover
+  const trigger = (field) => document.getElementById(field.input);
 
   /**
-   * Every control on the page that could be a listing field.
+   * Option rows for an open field.
    *
-   * Deliberately broad, and reports rather than decides - the point is to
-   * see what is actually there.
+   * Structural, not class-based. Tries, in order of confidence:
+   *   1. aria-controls / aria-owns on the input - the accessible contract
+   *   2. a visible [role="listbox"]
+   *   3. the nearest ancestor of the input that now contains a cluster of
+   *      short-text leaf elements
+   *
+   * Returns the container as well as the rows so scroll state can be checked
+   * for truncation.
    */
-  function discoverFields() {
-    const candidates = new Map();
-
-    const add = (el, why) => {
-      if (!isVisible(el)) return;
-      const id = el.id || "";
-      const cls = typeof el.className === "string" ? el.className : "";
-      const k = id || cls || el.tagName + Math.random();
-      if (candidates.has(k)) return;
-      candidates.set(k, {
-        why,
-        tag: el.tagName.toLowerCase(),
-        type: el.getAttribute("type") || "",
-        id,
-        className: cls.split(" ").slice(0, 3).join(" "),
-        label: labelFor(el),
-        placeholder: el.getAttribute("placeholder") || "",
-        readOnly: el.readOnly === true,
-        role: el.getAttribute("role") || "",
-        optionCount: el.tagName === "SELECT" ? el.options.length : null,
-        text: norm(el.textContent).slice(0, 40),
-        el,
-      });
-    };
-
-    document.querySelectorAll("select").forEach((el) => add(el, "select"));
-    document.querySelectorAll("input").forEach((el) => add(el, "input"));
-    document
-      .querySelectorAll('[role="combobox"], [role="listbox"], [aria-haspopup]')
-      .forEach((el) => add(el, "aria"));
-    document
-      .querySelectorAll('[id^="group-"], [class*="dropdown"], [class*="select"]')
-      .forEach((el) => add(el, "pattern"));
-
-    return Array.from(candidates.values());
-  }
-
-  function reportDiscovery() {
-    const fields = discoverFields();
-
-    console.log(
-      "%cDepop form fields found: " + fields.length,
-      "color:#111;font-weight:700"
-    );
-
-    // A table is far easier to read back than nested console groups.
-    console.table(
-      fields.map((f) => ({
-        tag: f.tag,
-        type: f.type,
-        id: f.id,
-        label: f.label,
-        placeholder: f.placeholder,
-        readOnly: f.readOnly,
-        role: f.role,
-        options: f.optionCount,
-        class: f.className,
-      }))
-    );
-
-    // Answer the brand question outright.
-    const brand = fields.find((f) =>
-      /brand/i.test(f.id + " " + f.label + " " + f.placeholder + " " + f.className)
-    );
-    console.log("");
-    if (!brand) {
-      console.log(
-        "%cBRAND: no field found. It may only appear after a category is set.",
-        "color:#b45309;font-weight:700"
-      );
-    } else if (brand.tag === "select") {
-      console.log(
-        "%cBRAND: a <select> with " + brand.optionCount + " options - FIXED LIST, worth scraping.",
-        "color:#166534;font-weight:700"
-      );
-    } else if (brand.tag === "input" && !brand.readOnly) {
-      console.log(
-        "%cBRAND: a free-text input (placeholder: " +
-          JSON.stringify(brand.placeholder) +
-          ") - autocomplete, NOT a fixed list. Pass values straight through; do not scrape.",
-        "color:#166534;font-weight:700"
-      );
-    } else {
-      console.log(
-        "%cBRAND: " + brand.tag + ", readOnly=" + brand.readOnly + " - inspect before deciding.",
-        "color:#b45309;font-weight:700"
-      );
+  function findOptionRows(input) {
+    const byAria =
+      input.getAttribute("aria-controls") || input.getAttribute("aria-owns");
+    if (byAria) {
+      const el = document.getElementById(byAria);
+      if (el && isVisible(el)) {
+        const rows = leafRows(el);
+        if (rows.length) return { container: el, rows, via: "aria-controls" };
+      }
     }
 
-    console.log(
-      "\nCopy the table above (or the JSON below) back, and I will fill in " +
-        "CONFIG.fields and switch MODE to \"scrape\"."
-    );
-
-    const json = JSON.stringify(
-      fields.map(({ el, ...rest }) => rest),
-      null,
-      2
-    );
-    globalThis.__depopFields = json;
-    console.log(json);
-    return json;
-  }
-
-  // --------------------------------------------------------------- scrape
-
-  function rowsIn(root) {
-    const scope = root && root.isConnected ? root : document;
-    let nodes = [];
-    for (const selector of CONFIG.rowSelectors) {
-      nodes = Array.from(scope.querySelectorAll(selector)).filter(isVisible);
-      if (nodes.length) break;
+    for (const box of document.querySelectorAll('[role="listbox"]')) {
+      if (!isVisible(box)) continue;
+      const rows = leafRows(box);
+      if (rows.length) return { container: box, rows, via: "role=listbox" };
     }
 
+    // Walk up from the input looking for the popup that just appeared.
+    let node = input.parentElement;
+    for (let depth = 0; node && depth < 6; depth++, node = node.parentElement) {
+      const rows = leafRows(node);
+      if (rows.length >= 3) return { container: node, rows, via: "ancestor" };
+    }
+
+    return { container: null, rows: [], via: "none" };
+  }
+
+  /** Visible leaf elements carrying a short label, de-duplicated by text. */
+  function leafRows(root) {
     const out = [];
     const seen = new Set();
-    for (const el of nodes) {
+
+    for (const el of root.querySelectorAll("*")) {
+      if (!isVisible(el)) continue;
+      // A row is a leaf: no child carrying the same text.
       const text = norm(el.textContent);
       if (!text || text.length > CONFIG.maxLabelLength) continue;
+      const twin = Array.from(el.children).find(
+        (c) => norm(c.textContent) === text
+      );
+      if (twin) continue;
       if (CONFIG.excludeRows.some((re) => re.test(text))) continue;
+
       const k = key(text);
       if (seen.has(k)) continue;
       seen.add(k);
@@ -235,7 +146,7 @@
 
   async function closeAll() {
     document.body.click();
-    await wait(200);
+    await wait(220);
     try {
       document.dispatchEvent(
         new KeyboardEvent("keydown", { key: "Escape", bubbles: true })
@@ -243,143 +154,291 @@
     } catch {
       /* ignore */
     }
-    await wait(200);
-  }
-
-  /** Open one field and return its visible rows, with diagnostics on failure. */
-  async function openField(field) {
-    const container = document.querySelector(field.selector);
-    if (!container) {
-      console.warn(
-        "%c[" + field.name + "] selector matched nothing: " + field.selector,
-        "color:#b91c1c;font-weight:700"
-      );
-      return { container: null, rows: [] };
-    }
-
-    await closeAll();
-
-    const before = signature(rowsIn(document));
-    const triggers = [
-      ...Array.from(
-        container.querySelectorAll('input, button, [role="combobox"], [role="button"]')
-      ).filter(isVisible),
-      container,
-    ];
-
-    for (const trigger of triggers) {
-      trigger.click();
-      await wait(CONFIG.openDelay);
-
-      const inside = rowsIn(container);
-      if (inside.length) return { container, rows: inside, scope: container };
-
-      const anywhere = rowsIn(document);
-      if (anywhere.length && signature(anywhere) !== before) {
-        return { container, rows: anywhere, scope: document };
-      }
-    }
-
-    console.warn(
-      "%c[" + field.name + "] found the field but could not open it",
-      "color:#b91c1c;font-weight:700"
-    );
-    console.log("  outerHTML:", container.outerHTML.slice(0, 1200));
-    return { container, rows: [] };
-  }
-
-  async function scrapeFlatField(field) {
-    const { rows } = await openField(field);
-    await closeAll();
-    console.log("  " + field.name + ": " + rows.length + " options");
-    return rows.map((r) => r.text);
+    await wait(220);
   }
 
   /**
-   * Walk a drilling field level by level.
+   * Open a field. Returns rows, or a reason it could not.
    *
-   * Mirrors the Poshmark scraper: re-open from the top for each branch rather
-   * than trying to reverse out of one, and treat a click that CLOSES the
-   * control as a selection rather than a timeout.
+   * Never returns partial success: either the field opened and produced
+   * rows, or it did not and says why.
    */
-  async function scrapeHierarchicalField(field) {
+  async function openField(field) {
+    const input = trigger(field);
+    if (!input) {
+      return { ok: false, reason: "trigger-not-found", detail: "#" + field.input };
+    }
+    if (!isVisible(input)) {
+      return {
+        ok: false,
+        reason: "trigger-hidden",
+        detail: "#" + field.input + " exists but is not visible - the field " +
+          "may only appear after an earlier one is set",
+      };
+    }
+
+    await closeAll();
+    input.click();
+    input.focus();
+    await wait(CONFIG.openDelay);
+
+    let found = findOptionRows(input);
+
+    // Some comboboxes only populate on input rather than on click.
+    if (!found.rows.length) {
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      await wait(CONFIG.openDelay);
+      found = findOptionRows(input);
+    }
+
+    if (!found.rows.length) {
+      return {
+        ok: false,
+        reason: "no-rows",
+        detail:
+          "opened #" + field.input + " but found no option rows (via " +
+          found.via + ")",
+      };
+    }
+
+    return { ok: true, input, ...found };
+  }
+
+  /**
+   * Read a flat field to completion, or refuse.
+   *
+   * Scrolls the popup to the bottom until the row count stops growing, so a
+   * lazily-rendered list is fully read. If it never stabilises, or ends up
+   * suspiciously large, the field is reported rather than returned - a
+   * truncated list looks correct and is not.
+   */
+  async function readAllRows(opened) {
+    const container = opened.container;
+    let rows = opened.rows;
+    let previous = -1;
+    let rounds = 0;
+
+    while (rows.length !== previous && rounds < 25) {
+      previous = rows.length;
+      rounds++;
+      if (container && container.scrollHeight > container.clientHeight) {
+        container.scrollTop = container.scrollHeight;
+        await wait(350);
+      } else {
+        break;
+      }
+      rows = findOptionRows(opened.input).rows;
+    }
+
+    if (rows.length !== previous && rounds >= 25) {
+      return {
+        ok: false,
+        reason: "list-never-settled",
+        detail: "row count still growing after " + rounds + " scrolls (" +
+          rows.length + " so far) - probably virtualised, so any result " +
+          "would be partial",
+      };
+    }
+
+    if (rows.length >= CONFIG.suspiciouslyLarge) {
+      return {
+        ok: false,
+        reason: "suspiciously-large",
+        detail: rows.length + " rows. A list this long is likely virtualised " +
+          "or search-driven; treat as free text rather than an enumerable set",
+      };
+    }
+
+    return { ok: true, values: rows.map((r) => r.text) };
+  }
+
+  async function scrapeFlat(field) {
+    const opened = await openField(field);
+    if (!opened.ok) {
+      addProblem(field.name, opened.reason, opened.detail);
+      await closeAll();
+      return null;
+    }
+
+    const read = await readAllRows(opened);
+    await closeAll();
+
+    if (!read.ok) {
+      addProblem(field.name, read.reason, read.detail);
+      return null;
+    }
+
+    console.log(
+      "%c  " + field.name + ": " + read.values.length + " options (via " + opened.via + ")",
+      "color:#166534"
+    );
+    return read.values;
+  }
+
+  /**
+   * Walk the hierarchical category field.
+   *
+   * Re-opens from the root for every branch rather than reversing out of one
+   * - there is no dependable "back", and a walk that loses its place records
+   * one department's categories under another. Any branch that fails is
+   * reported and its value left null rather than recorded as empty.
+   */
+  async function scrapeHierarchical(field) {
     const first = await openField(field);
-    if (!first.rows.length) return {};
+    if (!first.ok) {
+      addProblem(field.name, first.reason, first.detail);
+      await closeAll();
+      return null;
+    }
 
     const rootSig = signature(first.rows);
     const tops = first.rows.map((r) => r.text);
-    console.log("  " + field.name + ": " + tops.length + " top-level options");
+    console.log("%c  " + field.name + ": " + tops.length + " top-level", "color:#166534");
+    await closeAll();
 
     const tree = {};
 
     for (const top of tops) {
-      tree[top] = {};
-
       const opened = await openField(field);
+      if (!opened.ok) {
+        addProblem(field.name, "reopen-failed", 'while walking "' + top + '"');
+        tree[top] = null;
+        continue;
+      }
+
       if (signature(opened.rows) !== rootSig) {
-        console.warn("    not at root for " + top + " - skipping");
+        addProblem(
+          field.name,
+          "not-at-root",
+          'expected the top-level list before "' + top + '", saw: ' +
+            opened.rows.slice(0, 5).map((r) => r.text).join(", ")
+        );
+        tree[top] = null;
+        await closeAll();
         continue;
       }
 
       const target = opened.rows.find((r) => key(r.text) === key(top));
-      if (!target) continue;
+      if (!target) {
+        addProblem(field.name, "row-vanished", top);
+        tree[top] = null;
+        await closeAll();
+        continue;
+      }
 
       const before = signature(opened.rows);
       target.el.click();
       await wait(CONFIG.levelDelay);
 
-      const second = rowsIn(opened.scope || document);
-      if (!second.length || signature(second) === before) {
-        console.log("    " + top + ": no second level");
+      const next = findOptionRows(opened.input).rows;
+
+      if (!next.length) {
+        // Could be a leaf, or could be the control closing on selection.
+        // Either way it is not a confident empty, so say so.
+        addProblem(
+          field.name,
+          "no-second-level",
+          '"' + top + '" produced no further options - leaf, or the control ' +
+            "closed on selection"
+        );
+        tree[top] = null;
+        await closeAll();
         continue;
       }
 
-      for (const mid of second.map((r) => r.text)) tree[top][mid] = [];
-      console.log("    " + top + ": " + second.length + " categories");
+      if (signature(next) === before) {
+        addProblem(field.name, "list-did-not-advance", top);
+        tree[top] = null;
+        await closeAll();
+        continue;
+      }
+
+      tree[top] = next.map((r) => r.text);
+      console.log("    " + top + ": " + next.length);
+      await closeAll();
     }
 
-    await closeAll();
     return tree;
   }
 
-  async function runScrape() {
-    const missing = CONFIG.fields.filter((f) => !f.selector);
-    if (missing.length) {
-      console.error(
-        "%cThese fields have no selector yet: " +
-          missing.map((f) => f.name).join(", "),
-        "color:#b91c1c;font-weight:700"
-      );
-      console.error('Run with MODE = "discover" first.');
-      return;
-    }
+  // ------------------------------------------------------------------ run
 
-    const result = { scrapedAt: new Date().toISOString(), source: location.href, fields: {} };
+  console.log("%cScraping Depop listing fields...", "color:#111;font-weight:700");
 
-    for (const field of CONFIG.fields) {
-      console.log("%c" + field.name, "color:#2563eb;font-weight:700");
-      result.fields[field.name] = field.hierarchical
-        ? await scrapeHierarchicalField(field)
-        : await scrapeFlatField(field);
-    }
-
-    const json = JSON.stringify(result, null, 2);
-    try {
-      const blob = new Blob([json], { type: "application/json" });
-      const link = document.createElement("a");
-      link.href = URL.createObjectURL(blob);
-      link.download = "depop-fields.json";
-      link.click();
-    } catch (err) {
-      console.warn("Download failed; copy from below.", err);
-    }
-    globalThis.__depopFields = result;
-    console.log(json);
-    return result;
+  const missing = CONFIG.fields.filter((f) => !document.getElementById(f.input));
+  if (missing.length === CONFIG.fields.length) {
+    console.error(
+      "%cNone of the expected inputs exist. Are you on /products/create/ ?",
+      "color:#b91c1c;font-weight:700"
+    );
+    return;
   }
 
-  // ------------------------------------------------------------------ go
+  const result = {
+    scrapedAt: new Date().toISOString(),
+    source: location.href,
+    fields: {},
+    problems,
+  };
 
-  if (MODE === "discover") return reportDiscovery();
-  return await runScrape();
+  for (const field of CONFIG.fields) {
+    console.log("%c" + field.name, "color:#2563eb;font-weight:700");
+    result.fields[field.name] = field.hierarchical
+      ? await scrapeHierarchical(field)
+      : await scrapeFlat(field);
+
+    // Brand is expected to be free text; a refusal there is information,
+    // not a failure to fix.
+    if (field.mayBeFreeText && result.fields[field.name] === null) {
+      console.log(
+        "%c  brand looks like free text or a search field - pass values " +
+          "through rather than enumerating them",
+        "color:#6b7280"
+      );
+    }
+  }
+
+  await closeAll();
+
+  // --------------------------------------------------------------- output
+
+  const summary = Object.entries(result.fields).map(([name, value]) => ({
+    field: name,
+    status: value === null ? "FAILED - see problems" : "ok",
+    values: Array.isArray(value)
+      ? value.length
+      : value && typeof value === "object"
+        ? Object.keys(value).length + " groups"
+        : 0,
+  }));
+
+  console.log("");
+  console.table(summary);
+
+  if (problems.length) {
+    console.warn(
+      "%c" + problems.length + " field(s)/branch(es) did NOT scrape cleanly - " +
+        "their values are null, not partial:",
+      "color:#b91c1c;font-weight:700"
+    );
+    console.table(problems);
+  } else {
+    console.log("%cAll fields scraped cleanly.", "color:#166534;font-weight:700");
+  }
+
+  const json = JSON.stringify(result, null, 2);
+  try {
+    const blob = new Blob([json], { type: "application/json" });
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(blob);
+    link.download = "depop-fields.json";
+    link.click();
+  } catch (err) {
+    console.warn("Download failed; copy from below.", err);
+  }
+
+  globalThis.__depopFields = result;
+  console.log("Also on: __depopFields");
+  console.log(json);
+  return result;
 })();
