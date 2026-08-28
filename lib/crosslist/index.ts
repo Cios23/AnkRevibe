@@ -8,6 +8,8 @@ import {
   buildStyleTags,
   mapColors,
   mapCondition,
+  mapDepopAge,
+  mapDepopSource,
   mapSize,
 } from '@/lib/crosslist/attributes'
 import {
@@ -191,6 +193,8 @@ export function mapListing(
       styleEra: item.styleEra,
       brand: item.brand,
       garmentHint: internal?.garment ?? null,
+      title: item.title,
+      description: item.description,
     }),
     price: item.price,
   }
@@ -204,6 +208,23 @@ export function mapListing(
         message: 'Poshmark requires an original price and none could be derived',
       })
     }
+  }
+
+  if (platform === 'depop') {
+    // Both are optional on the form, so an unmapped one is a blank field
+    // rather than a blocked listing. Brand is deliberately absent: Depop's
+    // brand field is a search-driven autocomplete over a large dataset, not
+    // a fixed list, so the value passes through untouched.
+    listing.depopSource = mapDepopSource({
+      styleEra: item.styleEra,
+      condition: item.condition,
+      title: item.title,
+      description: item.description,
+    }).value
+
+    const age = mapDepopAge(item.styleEra)
+    listing.depopAge = age.value
+    if (age.warning) warnings.push({ field: 'age', message: age.warning })
   }
 
   if (platform === 'mercari') {

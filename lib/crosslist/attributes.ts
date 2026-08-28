@@ -112,9 +112,18 @@ export const POSHMARK_COLORS = [
 ]
 
 /** Depop's palette. */
+/**
+ * Depop's palette, read from the live listing form on 2026-08-28.
+ *
+ * Four of these were missing when written by hand: Tan, Burgundy, Navy and
+ * Khaki. Nothing invalid was being submitted, but the reduction below was
+ * throwing away detail Depop accepts - and khaki was dropped outright,
+ * because it reduced to Tan and Tan was not in the table either.
+ */
 export const DEPOP_COLORS = [
-  'Black', 'White', 'Grey', 'Brown', 'Cream', 'Red', 'Pink', 'Orange',
-  'Yellow', 'Green', 'Blue', 'Purple', 'Silver', 'Gold', 'Multi',
+  'Black', 'Grey', 'White', 'Brown', 'Tan', 'Cream', 'Yellow', 'Red',
+  'Burgundy', 'Orange', 'Pink', 'Purple', 'Blue', 'Navy', 'Green', 'Khaki',
+  'Multi', 'Silver', 'Gold',
 ]
 
 /** Mercari's palette. */
@@ -142,12 +151,13 @@ export const MAX_COLORS: Record<CrosslistPlatform, number> = {
  * it as Blue is right. Anything genuinely multi-coloured collapses to Multi.
  */
 const COLOR_SYNONYMS: Record<string, string> = {
-  navy: 'Blue', 'navy blue': 'Blue', teal: 'Blue', turquoise: 'Blue', aqua: 'Blue',
+  navy: 'Navy', 'navy blue': 'Navy', teal: 'Blue', turquoise: 'Blue', aqua: 'Blue',
   denim: 'Blue', royal: 'Blue', 'light blue': 'Blue', 'dark blue': 'Blue',
   charcoal: 'Gray', grey: 'Gray', 'light gray': 'Gray', 'dark gray': 'Gray',
   heather: 'Gray', 'heather gray': 'Gray',
-  burgundy: 'Red', maroon: 'Red', wine: 'Red', crimson: 'Red', rust: 'Orange',
-  khaki: 'Tan', camel: 'Tan', taupe: 'Tan', sand: 'Tan',
+  burgundy: 'Burgundy', maroon: 'Burgundy', wine: 'Burgundy',
+  crimson: 'Red', rust: 'Orange',
+  khaki: 'Khaki', camel: 'Tan', taupe: 'Tan', sand: 'Tan',
   beige: 'Beige', ivory: 'Cream', 'off white': 'Cream', bone: 'Cream',
   olive: 'Green', mint: 'Green', lime: 'Green', forest: 'Green', sage: 'Green',
   lavender: 'Purple', violet: 'Purple', plum: 'Purple', magenta: 'Pink',
@@ -166,13 +176,45 @@ function canonicalColor(raw: string): string | null {
   return value.charAt(0).toUpperCase() + value.slice(1)
 }
 
-/** Fallbacks when a canonical colour is absent from a given palette. */
-const PALETTE_FALLBACK: Record<string, string> = {
-  Gray: 'Grey', // Depop spells it Grey
-  Grey: 'Gray',
-  Beige: 'Tan', // Poshmark has Tan, not Beige
-  Tan: 'Beige', // Mercari has Beige, not Tan
-  Cream: 'White',
+/**
+ * Nearest alternatives when a palette lacks a colour, best first.
+ *
+ * Reduction happens per platform rather than globally, so a colour survives
+ * wherever it is offered: Navy stays Navy on Depop and becomes Blue on
+ * Poshmark and Mercari, which have no Navy. Collapsing at canonicalisation
+ * time - as this did - lost the distinction everywhere, for everyone.
+ *
+ * Chains are followed transitively, so Khaki reaches Beige on Mercari via
+ * Tan. Colours no platform offers (teal, olive, lavender) still collapse in
+ * COLOR_SYNONYMS, where there is nothing to preserve.
+ */
+const COLOR_REDUCTIONS: Record<string, string[]> = {
+  Navy: ['Blue'],
+  Burgundy: ['Red'],
+  // Beige before Green: on Mercari, which has neither Khaki nor Tan,
+  // Beige is far closer than Green.
+  Khaki: ['Tan', 'Beige', 'Green'],
+  Tan: ['Beige', 'Khaki', 'Brown'],
+  Beige: ['Tan', 'Cream'],
+  Cream: ['White', 'Beige'],
+  Gray: ['Grey'], // Depop spells it Grey
+  Grey: ['Gray'],
+}
+
+/** The nearest colour this palette offers, or null if there is none. */
+function reduceToPalette(canonical: string, palette: string[]): string | null {
+  if (palette.includes(canonical)) return canonical
+
+  const seen = new Set([canonical])
+  const queue = [...(COLOR_REDUCTIONS[canonical] ?? [])]
+  while (queue.length) {
+    const next = queue.shift()!
+    if (seen.has(next)) continue
+    seen.add(next)
+    if (palette.includes(next)) return next
+    queue.push(...(COLOR_REDUCTIONS[next] ?? []))
+  }
+  return null
 }
 
 export type ColorResult = { values: string[]; warning?: string }
@@ -199,11 +241,7 @@ export function mapColors(
     const canonical = canonicalColor(part)
     if (!canonical) continue
 
-    let chosen: string | null = palette.includes(canonical) ? canonical : null
-    if (!chosen) {
-      const fallback = PALETTE_FALLBACK[canonical]
-      if (fallback && palette.includes(fallback)) chosen = fallback
-    }
+    const chosen = reduceToPalette(canonical, palette)
     if (!chosen) {
       dropped.push(part)
       continue
@@ -322,6 +360,109 @@ export function mapCondition(
   return { value: scale[rank] }
 }
 
+// -------------------------------------------------- Depop source and age
+
+/**
+ * Depop's "Source" options, read from the live listing form on 2026-08-28.
+ *
+ * The spacing in "Reworked / Upcycled" is Depop's, not a typo - do not tidy
+ * it, the form matches on the exact string.
+ */
+export const DEPOP_SOURCES = [
+  'Vintage', 'Preloved', 'Reworked / Upcycled', 'Custom', 'Handmade',
+  'Deadstock', 'Designer', 'Repaired',
+] as const
+
+/** Depop's "Age" options, read from the live listing form on 2026-08-28. */
+export const DEPOP_AGES = [
+  'Modern', '00s', '90s', '80s', '70s', '60s', '50s', 'Antique',
+] as const
+
+/**
+ * Which decade bucket an era string falls into.
+ *
+ * This is where styleEra belongs. It was previously being pushed into Depop's
+ * Style field as free text ("1990s"), which Style does not accept - Age is
+ * the field that takes a decade, and it takes it from a fixed list.
+ */
+export function mapDepopAge(
+  styleEra: string | null | undefined,
+): { value: string | null; warning?: string } {
+  if (!styleEra || !styleEra.trim()) return { value: null }
+  const text = styleEra.toLowerCase()
+
+  if (/\bantique\b/.test(text)) return { value: 'Antique' }
+  if (/\by2k\b/.test(text)) return { value: '00s' }
+  if (/\bmodern\b|\bcontemporary\b|\bcurrent\b/.test(text)) return { value: 'Modern' }
+
+  // "1990s" first: the trailing s means \b never fires after the year, so a
+  // plain four-digit pattern misses the single commonest way an era is
+  // written. Then a bare year, then a bare decade.
+  const spelled = text.match(/\b(18|19|20)(\d)0s\b/)
+  const year = text.match(/\b(18|19|20)(\d)\d\b/)
+  const bare = text.match(/\b(\d0)s\b/)
+
+  let decade: number | null = null
+  if (spelled) decade = Number(spelled[1] + spelled[2] + '0')
+  else if (year) decade = Number(year[1] + year[2] + '0')
+  else if (bare) {
+    const two = Number(bare[1])
+    // Bare "00s"/"10s" are this century; everything else is the last one.
+    decade = two <= 20 ? 2000 + two : 1900 + two
+  }
+
+  if (decade === null) {
+    // "Vintage" on its own says second-hand, not which decade.
+    return {
+      value: null,
+      warning: `Era "${styleEra}" gives no decade for Depop's Age field`,
+    }
+  }
+
+  if (decade < 1950) return { value: 'Antique' }
+  if (decade >= 2010) return { value: 'Modern' }
+  if (decade >= 2000) return { value: '00s' }
+  return { value: String(decade).slice(2) + 's' } // 1990 -> "90s"
+}
+
+/**
+ * Where the item came from, as Depop models it.
+ *
+ * Optional on the form, so this returns null rather than guessing when the
+ * signals are weak - a wrong "Deadstock" is a misrepresented listing, an
+ * absent one is merely a blank field.
+ */
+export function mapDepopSource(input: {
+  styleEra?: string | null
+  condition?: string | null
+  title?: string | null
+  description?: string | null
+}): { value: string | null } {
+  const text = [input.title, input.description, input.styleEra]
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase()
+  const condition = (input.condition ?? '').toLowerCase()
+
+  // Most specific claims first: each says something the others do not.
+  if (/\breworked\b|\bupcycled\b|\brepurposed\b/.test(text)) {
+    return { value: 'Reworked / Upcycled' }
+  }
+  if (/\bhandmade\b|\bhand made\b|\bhand-made\b/.test(text)) return { value: 'Handmade' }
+  if (/\bdeadstock\b|\bnos\b/.test(text)) return { value: 'Deadstock' }
+  if (/\brepaired\b|\bmended\b|\bdarned\b/.test(text)) return { value: 'Repaired' }
+  if (/\bcustom\b|\bone of one\b|\bbespoke\b/.test(text)) return { value: 'Custom' }
+
+  const age = mapDepopAge(input.styleEra).value
+  const oldEnough = age !== null && age !== 'Modern'
+  if (oldEnough || /\bvintage\b/.test(text)) return { value: 'Vintage' }
+
+  // Anything second-hand that is not vintage is simply preloved.
+  if (condition && !/\bnew\b/.test(condition)) return { value: 'Preloved' }
+
+  return { value: null }
+}
+
 // ------------------------------------------------------------- style tags
 
 export const MAX_STYLE_TAGS: Record<CrosslistPlatform, number> = {
@@ -336,10 +477,20 @@ export const MAX_STYLE_TAGS: Record<CrosslistPlatform, number> = {
  */
 export function buildStyleTags(
   platform: CrosslistPlatform,
-  input: { styleEra?: string | null; brand?: string | null; garmentHint?: string | null },
+  input: {
+    styleEra?: string | null
+    brand?: string | null
+    garmentHint?: string | null
+    title?: string | null
+    description?: string | null
+  },
 ): string[] {
   const limit = MAX_STYLE_TAGS[platform]
   if (limit === 0) return []
+
+  // Depop's Style is a fixed vocabulary, so it gets chosen values, never
+  // free text. Poshmark's is genuinely free text and keeps the old behaviour.
+  if (platform === 'depop') return depopStyleTags(input).slice(0, limit)
 
   const tags: string[] = []
   const push = (value: string | null | undefined) => {
@@ -354,4 +505,99 @@ export function buildStyleTags(
   push(input.garmentHint)
 
   return tags.slice(0, limit)
+}
+
+/**
+ * Depop's "Style" options, read from the live listing form on 2026-08-28.
+ *
+ * Style is a fixed list, and buildStyleTags was feeding it free text - the
+ * era ("1990s"), the brand ("Nike") and the garment ("tshirts"). None of
+ * those are Style values, so every Depop style tag would have been rejected.
+ */
+export const DEPOP_STYLES = [
+  'Streetwear', 'Sportswear', 'Loungewear', 'Goth', 'Retro', 'Boho',
+  'Western', 'Indie', 'Skater', 'Rave', 'Costume', 'Cosplay', 'Grunge',
+  'Emo', 'Minimalist', 'Preppy', 'Avant Garde', 'Punk', 'Glam', 'Regency',
+  'Casual', 'Utility', 'Futuristic', 'Cottage', 'Fairy', 'Kidcore', 'Y2K',
+  'Biker', 'Gorpcore', 'Twee', 'Coquette', 'Whimsygoth',
+] as const
+
+/**
+ * Words that justify a Style value, most distinctive first.
+ *
+ * Deliberately narrow. A tag nobody searches costs nothing; a wrong one puts
+ * the item in front of the wrong buyers, so anything ambiguous is left off.
+ */
+const STYLE_KEYWORDS: Array<{ style: string; match: RegExp }> = [
+  { style: 'Whimsygoth', match: /\bwhimsygoth\b/i },
+  { style: 'Gorpcore', match: /\bgorpcore\b|\bouterdoor\b/i },
+  { style: 'Coquette', match: /\bcoquette\b/i },
+  { style: 'Kidcore', match: /\bkidcore\b/i },
+  { style: 'Cosplay', match: /\bcosplay\b/i },
+  { style: 'Costume', match: /\bcostume\b|\bhalloween\b/i },
+  { style: 'Avant Garde', match: /\bavant.?garde\b/i },
+  { style: 'Regency', match: /\bregency\b|\bvictorian\b|\bedwardian\b/i },
+  { style: 'Futuristic', match: /\bfuturistic\b|\bcyber\b|\bcybercore\b/i },
+  { style: 'Whimsygoth', match: /\bwhimsy\b/i },
+  { style: 'Cottage', match: /\bcottagecore\b|\bcottage core\b/i },
+  { style: 'Fairy', match: /\bfairycore\b|\bfairy core\b|\bfairy\b/i },
+  { style: 'Grunge', match: /\bgrunge\b|\bflannel\b/i },
+  { style: 'Goth', match: /\bgoth\b|\bgothic\b/i },
+  { style: 'Emo', match: /\bemo\b|\bscene\b/i },
+  { style: 'Punk', match: /\bpunk\b|\bstuds\b|\bstudded\b/i },
+  { style: 'Rave', match: /\brave\b|\bneon\b|\bfestival\b/i },
+  { style: 'Skater', match: /\bskater\b|\bskate\b|\bthrasher\b|\bskateboard\b/i },
+  { style: 'Biker', match: /\bbiker\b|\bmoto\b|\bmotorcycle\b|\bharley\b/i },
+  { style: 'Western', match: /\bwestern\b|\bcowboy\b|\bcowgirl\b|\brodeo\b/i },
+  { style: 'Boho', match: /\bboho\b|\bbohemian\b|\bcrochet\b/i },
+  { style: 'Preppy', match: /\bpreppy\b|\bprep\b|\bvarsity\b|\bpolo\b/i },
+  { style: 'Glam', match: /\bglam\b|\bsequin\b|\bsequined\b|\brhinestone\b/i },
+  { style: 'Twee', match: /\btwee\b/i },
+  { style: 'Indie', match: /\bindie\b/i },
+  { style: 'Minimalist', match: /\bminimalist\b|\bminimal\b/i },
+  { style: 'Utility', match: /\butility\b|\bcargo\b|\bworkwear\b|\bcarhartt\b|\bdickies\b/i },
+  { style: 'Sportswear', match: /\bsportswear\b|\bathletic\b|\bjersey\b|\btrack (jacket|pants|suit)\b|\bwarm.?up\b/i },
+  { style: 'Loungewear', match: /\bloungewear\b|\bpyjama\b|\bpajama\b|\bsleepwear\b|\brobe\b/i },
+  { style: 'Streetwear', match: /\bstreetwear\b|\bsupreme\b|\bhypebeast\b/i },
+  { style: 'Y2K', match: /\by2k\b/i },
+]
+
+/**
+ * Style values for Depop, drawn only from its own vocabulary.
+ *
+ * Returns an empty array when nothing matches. Style is optional on the form,
+ * and a blank field is better than a plausible-sounding wrong one.
+ */
+function depopStyleTags(input: {
+  styleEra?: string | null
+  brand?: string | null
+  garmentHint?: string | null
+  title?: string | null
+  description?: string | null
+}): string[] {
+  const text = [input.title, input.description, input.styleEra, input.brand]
+    .filter(Boolean)
+    .join(' ')
+
+  const chosen: string[] = []
+  const add = (style: string) => {
+    if (!chosen.includes(style)) chosen.push(style)
+  }
+
+  for (const rule of STYLE_KEYWORDS) {
+    if (rule.match.test(text)) add(rule.style)
+  }
+
+  // The era earns a tag on its own: 00s reads as Y2K, older reads as Retro.
+  const age = mapDepopAge(input.styleEra).value
+  if (age === '00s') add('Y2K')
+  else if (age && age !== 'Modern' && age !== 'Antique') add('Retro')
+
+  // Garment-level hints, only where the garment implies the style.
+  if (input.garmentHint === 'activewear-tops' || input.garmentHint === 'activewear-pants') {
+    add('Sportswear')
+  }
+  if (input.garmentHint === 'sleepwear') add('Loungewear')
+
+  return chosen
 }

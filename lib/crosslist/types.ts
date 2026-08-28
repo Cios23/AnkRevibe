@@ -71,6 +71,10 @@ export type MappedListing = {
   originalPrice?: number | null
   /** Poshmark models condition as a New-With-Tags boolean. */
   nwt?: boolean
+  /** Depop only - where the item came from, from its fixed list. */
+  depopSource?: string | null
+  /** Depop only - decade bucket, from its fixed list. */
+  depopAge?: string | null
   /** Mercari only. */
   shippingWeightOz?: number
   packageSize?: string

@@ -8,9 +8,15 @@ import {
   toInternalCategory,
 } from '../lib/crosslist/categories'
 import {
+  DEPOP_AGES,
   DEPOP_COLORS,
   DEPOP_CONDITIONS,
+  DEPOP_SOURCES,
+  DEPOP_STYLES,
   MERCARI_COLORS,
+  buildStyleTags,
+  mapDepopAge,
+  mapDepopSource,
   POSHMARK_COLORS,
   mapColors,
   mapCondition,
@@ -215,7 +221,9 @@ describe('mapColors', () => {
   })
 
   test('reduces a colour no palette offers to the nearest one', () => {
-    assert.deepEqual(mapColors('depop', 'Navy').values, ['Blue'])
+    // Depop is no longer the example here: it offers Navy and Burgundy, so
+    // reduction is exactly what must NOT happen there.
+    assert.deepEqual(mapColors('poshmark', 'Navy').values, ['Blue'])
     assert.deepEqual(mapColors('poshmark', 'Burgundy').values, ['Red'])
     assert.deepEqual(mapColors('mercari', 'Olive').values, ['Green'])
   })
@@ -240,8 +248,9 @@ describe('mapColors', () => {
   })
 
   test('deduplicates colours that reduce to the same palette entry', () => {
-    // Navy and Royal both become Blue; the listing should say Blue once.
-    assert.deepEqual(mapColors('depop', 'Navy/Royal').values, ['Blue'])
+    // On Poshmark, Navy and Royal both become Blue; say Blue once. Depop
+    // keeps them apart because it offers Navy, so it cannot show the dedup.
+    assert.deepEqual(mapColors('poshmark', 'Navy/Royal').values, ['Blue'])
   })
 
   test('reports a colour it could not place', () => {
@@ -334,6 +343,181 @@ describe('mapCondition', () => {
     const mBetter = mapCondition('mercari', 'Pre-owned - Excellent').value
     const mWorse = mapCondition('mercari', 'Pre-owned - Fair').value
     assert.notEqual(mBetter, mWorse)
+  })
+})
+
+// -------------------------------------------- Depop's fixed vocabularies
+
+/**
+ * Every Depop field is a fixed list except brand, and each hand-written
+ * table was checked against the live form on 2026-08-28. Condition was wrong
+ * on three of five values and Style was being fed free text, so these tests
+ * pin every reachable output to what the form actually offers. A value that
+ * is not on the list is not "close enough" - the form rejects it.
+ */
+describe("Depop's fixed vocabularies", () => {
+  const ERAS = [
+    '1990s', '90s', '1985', '2003', 'Y2K', '2015', '1940s',
+    'Vintage', 'Modern', 'Antique', null, '', 'sometime in the past',
+  ]
+
+  test('every Age it can emit is one the form offers', () => {
+    for (const era of ERAS) {
+      const value = mapDepopAge(era).value
+      assert.ok(
+        value === null || (DEPOP_AGES as readonly string[]).includes(value),
+        `era "${era}" -> "${value}", which Depop does not offer`,
+      )
+    }
+  })
+
+  test('decades land in the right bucket', () => {
+    assert.equal(mapDepopAge('1990s').value, '90s')
+    assert.equal(mapDepopAge('90s').value, '90s')
+    assert.equal(mapDepopAge('1985').value, '80s')
+    assert.equal(mapDepopAge('2003').value, '00s')
+    assert.equal(mapDepopAge('Y2K').value, '00s')
+    // Depop's list stops at 50s in one direction and Modern in the other.
+    assert.equal(mapDepopAge('2015').value, 'Modern')
+    assert.equal(mapDepopAge('1940s').value, 'Antique')
+  })
+
+  test('"Vintage" alone warns rather than inventing a decade', () => {
+    // It says second-hand, not which decade - and Age is a decade field.
+    const result = mapDepopAge('Vintage')
+    assert.equal(result.value, null)
+    assert.ok(result.warning)
+  })
+
+  test('every Source it can emit is one the form offers', () => {
+    const inputs = [
+      { title: 'Reworked Levi denim jacket' },
+      { title: 'Handmade knit scarf' },
+      { title: 'Deadstock 90s tee', styleEra: '1995' },
+      { description: 'small repaired tear on the hem', condition: 'Used' },
+      { title: 'Custom painted jacket' },
+      { styleEra: '1980s', condition: 'Used' },
+      { condition: 'Pre-owned - Good' },
+      { condition: 'New with tags' },
+      {},
+    ]
+    for (const input of inputs) {
+      const value = mapDepopSource(input).value
+      assert.ok(
+        value === null || (DEPOP_SOURCES as readonly string[]).includes(value),
+        `${JSON.stringify(input)} -> "${value}", which Depop does not offer`,
+      )
+    }
+  })
+
+  test('Source prefers the most specific claim', () => {
+    assert.equal(mapDepopSource({ title: 'Reworked denim' }).value, 'Reworked / Upcycled')
+    assert.equal(mapDepopSource({ title: 'Handmade scarf' }).value, 'Handmade')
+    assert.equal(mapDepopSource({ styleEra: '1985', condition: 'Used' }).value, 'Vintage')
+    assert.equal(mapDepopSource({ condition: 'Pre-owned - Good' }).value, 'Preloved')
+    // Nothing to go on is a blank field, not a guess.
+    assert.equal(mapDepopSource({}).value, null)
+  })
+
+  test('the slash spacing in "Reworked / Upcycled" is preserved', () => {
+    // Depop matches the exact string; tidying the spaces breaks the fill.
+    assert.ok((DEPOP_SOURCES as readonly string[]).includes('Reworked / Upcycled'))
+    assert.equal(mapDepopSource({ title: 'upcycled tee' }).value, 'Reworked / Upcycled')
+  })
+
+  test('every Style tag it can emit is one the form offers', () => {
+    // Style used to receive the era, the brand and the garment as free text -
+    // "1990s", "Nike", "tshirts" - none of which are Style values.
+    const items = [
+      { title: 'Nike track jacket', brand: 'Nike', styleEra: '1990s', garmentHint: 'activewear-tops' },
+      { title: 'Carhartt cargo pants', brand: 'Carhartt', styleEra: '2003' },
+      { title: 'Vintage flannel shirt', brand: 'Wrangler', styleEra: '1995' },
+      { title: 'Plain white tee', brand: 'Hanes', styleEra: null },
+      { title: 'Cowboy boots', brand: null, styleEra: '1975' },
+      { title: 'Sequin party dress', brand: 'BCBG', styleEra: '2005' },
+    ]
+    for (const item of items) {
+      for (const tag of buildStyleTags('depop', item)) {
+        assert.ok(
+          (DEPOP_STYLES as readonly string[]).includes(tag),
+          `"${tag}" from ${item.title} is not a Depop Style value`,
+        )
+      }
+    }
+  })
+
+  test('Style never emits the brand, era or garment', () => {
+    const tags = buildStyleTags('depop', {
+      title: 'Nike track jacket',
+      brand: 'Nike',
+      styleEra: '1990s',
+      garmentHint: 'activewear-tops',
+    })
+    assert.ok(!tags.includes('Nike'))
+    assert.ok(!tags.includes('1990s'))
+    assert.ok(!tags.includes('activewear-tops'))
+    assert.ok(tags.includes('Sportswear'))
+    assert.ok(tags.length <= 2, 'Depop takes at most 2 style tags')
+  })
+
+  test('Style is left empty rather than guessed', () => {
+    // A wrong tag puts the item in front of the wrong buyers; a missing one
+    // costs nothing, and the field is optional.
+    assert.deepEqual(
+      buildStyleTags('depop', { title: 'Plain white tee', brand: 'Hanes' }),
+      [],
+    )
+  })
+
+  test('Poshmark keeps free-text style tags', () => {
+    // Only Depop's Style is a fixed list; changing it must not change theirs.
+    const tags = buildStyleTags('poshmark', {
+      styleEra: '1990s',
+      brand: 'Nike',
+      garmentHint: 'tshirts',
+    })
+    assert.deepEqual(tags, ['1990s', 'Nike', 'tshirts'])
+  })
+
+  test('every colour it can emit is on the right palette', () => {
+    const raws = [
+      'Navy', 'Burgundy', 'Khaki', 'Tan', 'Beige', 'Grey', 'Gray', 'Cream',
+      'Olive', 'Teal', 'Maroon', 'Camel', 'Lavender', 'Blue/White', 'Rainbow',
+    ]
+    const palettes = {
+      depop: DEPOP_COLORS,
+      poshmark: POSHMARK_COLORS,
+      mercari: MERCARI_COLORS,
+    } as const
+    for (const [platform, palette] of Object.entries(palettes)) {
+      for (const raw of raws) {
+        for (const value of mapColors(platform as CrosslistPlatform, raw).values) {
+          assert.ok(
+            palette.includes(value),
+            `${platform}: "${raw}" -> "${value}", not on its palette`,
+          )
+        }
+      }
+    }
+  })
+
+  test('a colour survives wherever the platform offers it', () => {
+    // Navy, Burgundy and Khaki were collapsing before they reached the
+    // palette, so Depop lost detail it accepts - and khaki was dropped
+    // entirely, reducing to a Tan that was missing from the table too.
+    assert.deepEqual(mapColors('depop', 'Navy').values, ['Navy'])
+    assert.deepEqual(mapColors('depop', 'Burgundy').values, ['Burgundy'])
+    assert.deepEqual(mapColors('depop', 'Khaki').values, ['Khaki'])
+    assert.deepEqual(mapColors('depop', 'Tan').values, ['Tan'])
+  })
+
+  test('and still reduces where the platform does not', () => {
+    assert.deepEqual(mapColors('poshmark', 'Navy').values, ['Blue'])
+    assert.deepEqual(mapColors('mercari', 'Navy').values, ['Blue'])
+    assert.deepEqual(mapColors('poshmark', 'Burgundy').values, ['Red'])
+    // Khaki reaches Beige on Mercari transitively, via Tan.
+    assert.deepEqual(mapColors('mercari', 'Khaki').values, ['Beige'])
+    assert.deepEqual(mapColors('poshmark', 'Khaki').values, ['Tan'])
   })
 })
 

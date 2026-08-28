@@ -41,14 +41,19 @@
   "use strict";
 
   /** "scrape" | "diagnose" */
-  const MODE = "diagnose";
+  const MODE = "scrape";
   /** Which field diagnose mode inspects. */
   const DIAGNOSE_FIELD = "brand";
 
   const CONFIG = {
     fields: [
       { name: "category", input: "group-input", hierarchical: true },
-      { name: "brand", input: "brand-input", mayBeSearchDriven: true },
+      // Brand is a search-driven autocomplete over a large dataset, not a
+      // fixed list: the default view shows an unrelated sample and typing
+      // "a" returns a completely different filtered set. Confirmed by
+      // diagnose on 2026-08-28. Values pass through untouched, so there is
+      // nothing to enumerate and nothing to map.
+      { name: "brand", input: "brand-input", passThrough: true },
       { name: "condition", input: "condition-input" },
       { name: "colour", input: "colour-input" },
       { name: "source", input: "source-input" },
@@ -717,6 +722,14 @@
   };
 
   for (const field of CONFIG.fields) {
+    if (field.passThrough) {
+      console.log(
+        "%c" + field.name + ": free text, nothing to enumerate - skipped",
+        "color:#6b7280"
+      );
+      result.fields[field.name] = "free-text";
+      continue;
+    }
     console.log("%c" + field.name, "color:#2563eb;font-weight:700");
     result.fields[field.name] = field.hierarchical
       ? await scrapeHierarchical(field)
@@ -727,7 +740,8 @@
 
   const summary = Object.entries(result.fields).map(([name, value]) => ({
     field: name,
-    status: value === null ? "FAILED - see problems" : "ok",
+    status:
+      value === "free-text" ? "free text" : value === null ? "FAILED - see problems" : "ok",
     values: Array.isArray(value)
       ? value.length
       : value && typeof value === "object"
