@@ -41,7 +41,7 @@
   "use strict";
 
   /** "scrape" | "diagnose" */
-  const MODE = "scrape";
+  const MODE = "diagnose";
   /** Which field diagnose mode inspects. */
   const DIAGNOSE_FIELD = "condition";
 
@@ -528,9 +528,59 @@
     );
 
     await closeAll();
+
+    // Snapshot the whole document, click, then diff. Whatever appears IS the
+    // menu - wherever it renders, whatever it is called. This is the one
+    // check that does not depend on any assumption about Depop's markup,
+    // which is what the last three rounds got wrong.
+    const before = new Set(document.querySelectorAll("*"));
+
     input.focus();
     input.click();
-    await wait(1200);
+    await wait(1500);
+
+    const appeared = Array.from(document.querySelectorAll("*")).filter(
+      (el) => !before.has(el)
+    );
+
+    console.log(
+      "%c  --- " + appeared.length + " element(s) appeared after the click ---",
+      "color:#2563eb;font-weight:700"
+    );
+    console.log("  aria-expanded now:", input.getAttribute("aria-expanded"));
+
+    if (!appeared.length) {
+      console.warn(
+        "  NOTHING appeared. The click did not open anything - the control " +
+          "may need a different event (mousedown/keydown), or the field may " +
+          "be disabled until another field is set."
+      );
+      // Does a real mousedown work where click did not?
+      input.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+      await wait(1200);
+      const afterMouseDown = Array.from(document.querySelectorAll("*")).filter(
+        (el) => !before.has(el)
+      );
+      console.log("  after mousedown, appeared:", afterMouseDown.length);
+      appeared.push(...afterMouseDown);
+    }
+
+    // Roots of the appeared subtrees, so one line per menu rather than one
+    // per node.
+    const roots = appeared.filter((el) => !appeared.includes(el.parentElement));
+    console.log("  appeared subtree roots:", roots.length);
+    roots.slice(0, 12).forEach((el, i) => {
+      console.log(
+        "   root[" + i + "] <" + el.tagName.toLowerCase() + "> id=" +
+          (el.id || "-") + " class=" + String(el.className).slice(0, 70) +
+          " visible=" + isVisible(el) +
+          " options=" + el.querySelectorAll('[role="option"]').length +
+          " children=" + el.children.length,
+        el
+      );
+      console.log("      text: " + norm(el.textContent).slice(0, 200));
+      console.log("      html: " + el.outerHTML.slice(0, 400));
+    });
 
     console.log(
       "  [role=option] in document:",
@@ -564,9 +614,22 @@
       );
     }
 
-    console.log("  typing 'a' to test for a search-driven list...");
+    console.log("%c  --- typing probe ---", "color:#2563eb;font-weight:700");
+    const beforeTyping = new Set(document.querySelectorAll("*"));
     setNativeValue(input, "a");
-    await wait(1200);
+    await wait(1500);
+    const typed = Array.from(document.querySelectorAll("*")).filter(
+      (el) => !beforeTyping.has(el)
+    );
+    console.log("  typing 'a' produced " + typed.length + " new element(s)");
+    const typedRoots = typed.filter((el) => !typed.includes(el.parentElement));
+    typedRoots.slice(0, 6).forEach((el, i) => {
+      console.log(
+        "   typed-root[" + i + "] <" + el.tagName.toLowerCase() + "> class=" +
+          String(el.className).slice(0, 60) + " -> " +
+          norm(el.textContent).slice(0, 160)
+      );
+    });
     console.log(
       "  [role=option] after typing:",
       document.querySelectorAll('[role="option"]').length
