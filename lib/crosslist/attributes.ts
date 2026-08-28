@@ -228,9 +228,16 @@ export function mapColors(
 
 // -------------------------------------------------------------- conditions
 
-/** Depop's 5 tiers. */
+/**
+ * Depop's 5 tiers, read from the live listing form on 2026-08-28.
+ *
+ * Written by hand these were wrong on three of five: Depop prefixes its used
+ * tiers with "Used - " and has no "Very good" at all, so the guessed values
+ * ("Excellent", "Very good", "Good") were strings the form does not accept.
+ * Verified against the rendered dropdown - do not "tidy" the prefix away.
+ */
 export const DEPOP_CONDITIONS = [
-  'Brand new', 'Like new', 'Excellent', 'Very good', 'Good',
+  'Brand new', 'Like new', 'Used - Excellent', 'Used - Good', 'Used - Fair',
 ] as const
 
 /** Mercari's 6 tiers. */
@@ -293,8 +300,20 @@ export function mapCondition(
   }
 
   if (platform === 'depop') {
-    // 0..5 -> Brand new / Like new / Excellent / Very good / Good / Good
-    const scale = ['Brand new', 'Like new', 'Excellent', 'Very good', 'Good', 'Good']
+    // 0..5 -> Brand new / Like new / Used - Excellent / Used - Good /
+    //         Used - Good / Used - Fair
+    //
+    // Depop offers only three used tiers, so rank 3 ("very good") lands on
+    // "Used - Good" rather than "Used - Excellent". Understating condition
+    // costs a little money; overstating it earns a return and a defect.
+    const scale: readonly string[] = [
+      'Brand new',
+      'Like new',
+      'Used - Excellent',
+      'Used - Good',
+      'Used - Good',
+      'Used - Fair',
+    ]
     return { value: scale[rank] }
   }
 

@@ -9,6 +9,7 @@ import {
 } from '../lib/crosslist/categories'
 import {
   DEPOP_COLORS,
+  DEPOP_CONDITIONS,
   MERCARI_COLORS,
   POSHMARK_COLORS,
   mapColors,
@@ -271,10 +272,10 @@ describe('mapCondition', () => {
   test('maps eBay display names onto Depop’s 5 tiers', () => {
     assert.equal(mapCondition('depop', 'New with tags').value, 'Brand new')
     assert.equal(mapCondition('depop', 'New without tags').value, 'Like new')
-    assert.equal(mapCondition('depop', 'Pre-owned - Excellent').value, 'Excellent')
-    assert.equal(mapCondition('depop', 'Very Good').value, 'Very good')
-    assert.equal(mapCondition('depop', 'Pre-owned - Good').value, 'Good')
-    assert.equal(mapCondition('depop', 'Pre-owned - Fair').value, 'Good')
+    assert.equal(mapCondition('depop', 'Pre-owned - Excellent').value, 'Used - Excellent')
+    assert.equal(mapCondition('depop', 'Very Good').value, 'Used - Good')
+    assert.equal(mapCondition('depop', 'Pre-owned - Good').value, 'Used - Good')
+    assert.equal(mapCondition('depop', 'Pre-owned - Fair').value, 'Used - Fair')
   })
 
   test('maps onto Mercari’s 6 tiers', () => {
@@ -292,11 +293,30 @@ describe('mapCondition', () => {
 
   test('handles the messy real values', () => {
     // The catalogue has bare "Used", "Pre-owned", lowercase "good", "Ungraded".
-    assert.equal(mapCondition('depop', 'Used').value, 'Good')
-    assert.equal(mapCondition('depop', 'Pre-owned').value, 'Good')
-    assert.equal(mapCondition('depop', 'good').value, 'Good')
+    assert.equal(mapCondition('depop', 'Used').value, 'Used - Good')
+    assert.equal(mapCondition('depop', 'Pre-owned').value, 'Used - Good')
+    assert.equal(mapCondition('depop', 'good').value, 'Used - Good')
     assert.equal(mapCondition('mercari', 'Ungraded').value, 'Good')
     assert.equal(mapCondition('mercari', 'Open box').value, 'Like new')
+  })
+
+  test('every Depop value it can emit is one the form actually offers', () => {
+    // The hand-written table had "Excellent", "Very good" and "Good"; the
+    // live form offers "Used - Excellent", "Used - Good" and "Used - Fair"
+    // and no "Very good" at all, so three of five were strings Depop would
+    // reject. This pins every reachable output to the verified list.
+    const inputs = [
+      'New with tags', 'New without tags', 'New', 'Open box', 'Like new',
+      'Pre-owned - Excellent', 'Very Good', 'Pre-owned - Good', 'Used',
+      'Pre-owned', 'good', 'Pre-owned - Fair', 'For parts', 'Ungraded',
+    ]
+    for (const raw of inputs) {
+      const value = mapCondition('depop', raw).value
+      assert.ok(
+        value && (DEPOP_CONDITIONS as readonly string[]).includes(value),
+        `"${raw}" -> "${value}", which Depop does not offer`,
+      )
+    }
   })
 
   test('an unrecognised condition warns rather than guessing a tier', () => {

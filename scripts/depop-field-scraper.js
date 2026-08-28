@@ -43,7 +43,7 @@
   /** "scrape" | "diagnose" */
   const MODE = "diagnose";
   /** Which field diagnose mode inspects. */
-  const DIAGNOSE_FIELD = "condition";
+  const DIAGNOSE_FIELD = "brand";
 
   const CONFIG = {
     fields: [
@@ -57,6 +57,18 @@
     ],
 
     openDelay: 900,
+    /**
+     * How long to keep re-reading a menu before calling it empty.
+     *
+     * This is what broke condition. react-select renders the menu instantly
+     * with its "No option" placeholder and fills it a moment later, so the
+     * single read at openDelay (900ms) captured the placeholder and returned
+     * "empty-menu" as a terminal failure. Diagnose happened to wait 1500ms
+     * and saw the real five values from the same aria-controls candidate.
+     * Polling fixes the class of bug; a longer sleep would only move it.
+     */
+    menuTimeout: 8000,
+    pollInterval: 250,
     levelDelay: 700,
     /** Attempts to reach a verified root before abandoning a branch. */
     rootResetAttempts: 4,
@@ -283,6 +295,46 @@
   }
 
   /**
+   * Open the control.
+   *
+   * mousedown first, because react-select opens on mousedown and ignores a
+   * bare click; the click stays for components that want it. Sending both
+   * costs nothing and covers either implementation.
+   */
+  function openControl(input) {
+    input.focus();
+    input.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+    input.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
+    input.click();
+  }
+
+  /**
+   * Poll until the menu has real options, or the deadline passes.
+   *
+   * An empty menu is not an answer, it is a menu that has not loaded yet -
+   * exactly what made condition report "empty-menu" when it has five perfectly
+   * good values. Only a menu still empty at the deadline is reported as empty.
+   */
+  async function waitForMenu(input) {
+    const deadline = Date.now() + CONFIG.menuTimeout;
+    let last = { ok: false, reason: "no-menu", detail: "never resolved" };
+
+    while (Date.now() < deadline) {
+      const menu = resolveMenu(input);
+      if (menu.ok) return menu;
+      last = menu;
+      await wait(CONFIG.pollInterval);
+    }
+
+    return {
+      ...last,
+      detail:
+        (last.detail || "") + " (still so after " +
+        Math.round(CONFIG.menuTimeout / 1000) + "s of polling)",
+    };
+  }
+
+  /**
    * Open one field and resolve its menu.
    *
    * Closes everything else first: a menu left open elsewhere was one of the
@@ -303,17 +355,14 @@
     }
 
     await closeAll();
-    input.focus();
-    input.click();
-    await wait(CONFIG.openDelay);
+    openControl(input);
 
-    let menu = resolveMenu(input);
+    let menu = await waitForMenu(input);
 
     // A search-driven control populates on keystroke, not on click.
     if (!menu.ok && type) {
       setNativeValue(input, type);
-      await wait(CONFIG.openDelay);
-      menu = resolveMenu(input);
+      menu = await waitForMenu(input);
     }
 
     if (!menu.ok) return { ok: false, reason: menu.reason, detail: menu.detail };
@@ -535,8 +584,7 @@
     // which is what the last three rounds got wrong.
     const before = new Set(document.querySelectorAll("*"));
 
-    input.focus();
-    input.click();
+    openControl(input);
     await wait(1500);
 
     const appeared = Array.from(document.querySelectorAll("*")).filter(
