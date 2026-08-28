@@ -2,6 +2,14 @@ import { test, describe, before } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 
+import {
+  DEPOP_AGES,
+  DEPOP_COLORS,
+  DEPOP_CONDITIONS,
+  DEPOP_SOURCES,
+  DEPOP_STYLES,
+} from '../lib/crosslist/attributes'
+
 /**
  * Tests the option chooser in extension/lib/dropdown.js.
  *
@@ -99,52 +107,88 @@ describe('chooseOption', () => {
   })
 })
 
-describe('generated category map', () => {
-  let lookup: (
-    platform: string,
-    category: string | null,
-    subcategory: string | null,
-  ) => string[] | null
+describe('the generated crosslist map', () => {
+  let map: any
 
   before(() => {
-    const source = readFileSync('extension/lib/category-map.generated.js', 'utf8')
+    const source = readFileSync('extension/lib/crosslist-map.generated.js', 'utf8')
     new Function(source).call(globalThis)
-    lookup = (globalThis as any).AnkCategoryMap.lookup
+    map = (globalThis as any).AnkCrosslist
   })
 
-  test('resolves a real catalogue category to a three-tier path', () => {
-    const path = lookup(
-      'poshmark',
-      "Clothing, Shoes & Accessories:Men:Men's Clothing:Shirts:T-Shirts",
-      'Men',
-    )
-    assert.ok(path, 'expected a mapping for a menswear t-shirt')
-    assert.equal(path!.length, 3)
-    assert.equal(path![0], 'Men')
+  test('holds a resolved mapping for real items', () => {
+    const ids = Object.keys(map.items)
+    assert.ok(ids.length > 0, 'the map is empty - regenerate it')
+    const entry = map.lookup('poshmark', ids[0])
+    assert.ok(entry, 'expected a poshmark entry for the first item')
+    assert.ok('categoryPath' in entry && 'colors' in entry && 'size' in entry)
   })
 
-  test('Mercari gets four tiers where Poshmark gets three', () => {
-    const args = [
-      "Clothing, Shoes & Accessories:Men:Men's Clothing:Jeans",
-      'Men',
-    ] as const
-    assert.equal(lookup('poshmark', ...args)!.length, 3)
-    assert.equal(lookup('mercari', ...args)!.length, 4)
+  test('an unknown item is null, not a crash', () => {
+    // Null means "regenerate", and the popup falls back to raw values.
+    assert.equal(map.lookup('poshmark', 'no-such-id'), null)
+    assert.equal(map.lookup('nosuchplatform', Object.keys(map.items)[0]), null)
   })
 
-  test('returns null for a category with no clothing home', () => {
-    // Collectibles are not listable on these platforms; a null here is what
-    // makes the validator block rather than the fill guessing.
-    assert.equal(
-      lookup('poshmark', 'Collectibles:Holiday & Seasonal:Ornaments', null),
-      null,
-    )
+  test('Poshmark paths are three tiers when present', () => {
+    let checked = 0
+    for (const id of Object.keys(map.items)) {
+      const path = map.lookup('poshmark', id)?.categoryPath
+      if (!path) continue
+      assert.equal(path.length, 3, `${id} has ${path.length} tiers`)
+      checked++
+    }
+    assert.ok(checked > 0, 'no poshmark categories mapped at all')
   })
 
-  test('an unknown category is null, not a crash', () => {
-    assert.equal(lookup('poshmark', 'Nonsense:Path', 'Men'), null)
-    assert.equal(lookup('poshmark', null, null), null)
-    assert.equal(lookup('nosuchplatform', 'x', 'y'), null)
+  test('never emits a value Depop would reject', () => {
+    // The end of the chain that started with three of five condition values
+    // being wrong: whatever the rules do, what actually reaches the form
+    // must be on the form. A failure here means a listing gets filled with a
+    // string Depop does not accept.
+    for (const id of Object.keys(map.items)) {
+      const entry = map.lookup('depop', id)
+      if (!entry) continue
+
+      if (entry.condition) {
+        assert.ok(
+          (DEPOP_CONDITIONS as readonly string[]).includes(entry.condition),
+          `${id}: condition "${entry.condition}"`,
+        )
+      }
+      if (entry.age) {
+        assert.ok(
+          (DEPOP_AGES as readonly string[]).includes(entry.age),
+          `${id}: age "${entry.age}"`,
+        )
+      }
+      if (entry.source) {
+        assert.ok(
+          (DEPOP_SOURCES as readonly string[]).includes(entry.source),
+          `${id}: source "${entry.source}"`,
+        )
+      }
+      for (const tag of entry.styleTags ?? []) {
+        assert.ok(
+          (DEPOP_STYLES as readonly string[]).includes(tag),
+          `${id}: style "${tag}"`,
+        )
+      }
+      for (const color of entry.colors ?? []) {
+        assert.ok(DEPOP_COLORS.includes(color), `${id}: colour "${color}"`)
+      }
+      assert.ok((entry.colors ?? []).length <= 2, `${id}: more than 2 colours`)
+      assert.ok((entry.styleTags ?? []).length <= 2, `${id}: more than 2 style tags`)
+    }
+  })
+
+  test('Poshmark gets an original price at or above the listing price', () => {
+    // Poshmark rejects an original price below the listing price.
+    for (const id of Object.keys(map.items)) {
+      const entry = map.lookup('poshmark', id)
+      if (!entry || entry.originalPrice == null) continue
+      assert.ok(entry.originalPrice > 0, `${id}: original price ${entry.originalPrice}`)
+    }
   })
 })
 

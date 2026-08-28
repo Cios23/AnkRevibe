@@ -140,6 +140,87 @@
     };
   }
 
+  const SEL_SIZE_CONTAINER = [
+    "div.listing-editor__size-container",
+    '[class*="listing-editor__size-container"]',
+    '[data-vv-name="size"]',
+  ];
+
+  const SEL_COLOR_CONTAINER = [
+    "div.listing-editor__color-container",
+    '[class*="listing-editor__color-container"]',
+  ];
+
+  /**
+   * Size is a picker, not a text box.
+   *
+   * Poshmark groups sizes by type, so the mapped value may sit one level
+   * down; both a direct hit and a one-level drill are attempted. Typing into
+   * it does not stick, which is why the old setNativeValue call left size
+   * blank on listings that looked filled.
+   */
+  async function fillSize(size) {
+    if (!size) return { ok: false, reason: "no-mapping" };
+
+    const container = firstContainer(SEL_SIZE_CONTAINER);
+    if (!container) return { ok: false, reason: "no-container", step: "size" };
+
+    const direct = await globalThis.AnkDropdown.selectNestedPath(container, [size]);
+    if (direct.ok) return direct;
+
+    // Grouped under a size type ("Standard", "Juniors"...): try one level in.
+    const grouped = await globalThis.AnkDropdown.selectNestedPath(container, [
+      "Standard",
+      size,
+    ]);
+    return grouped.ok ? grouped : direct;
+  }
+
+  /**
+   * Colours are swatches with visible labels, and Poshmark accepts at most
+   * two - the mapping layer has already capped the list, so this fills what
+   * it is given rather than deciding.
+   */
+  async function fillColors(colors) {
+    if (!Array.isArray(colors) || !colors.length) {
+      return { ok: false, reason: "no-mapping" };
+    }
+
+    const container = firstContainer(SEL_COLOR_CONTAINER);
+    if (!container) return { ok: false, reason: "no-container", step: "color" };
+
+    const missed = [];
+    for (const color of colors) {
+      const result = await globalThis.AnkDropdown.selectNestedPath(container, [color]);
+      if (!result.ok) missed.push(color);
+    }
+
+    return missed.length
+      ? { ok: false, reason: "not-found", missed }
+      : { ok: true };
+  }
+
+  /**
+   * New With Tags is a toggle, not a condition dropdown - Poshmark has no
+   * condition field at all, which is why the mapping layer returns a boolean
+   * here and a string everywhere else.
+   */
+  function setNwt(nwt) {
+    if (!nwt) return { ok: true, skipped: true };
+
+    const candidates = Array.from(
+      document.querySelectorAll('button, [role="switch"], [role="checkbox"], label')
+    );
+    for (const el of candidates) {
+      const text = (el.textContent || "").trim().toLowerCase();
+      if (text === "new with tags" || text === "nwt") {
+        el.click();
+        return { ok: true };
+      }
+    }
+    return { ok: false, reason: "toggle-not-found" };
+  }
+
   const SEL_BRAND = [
     'input[data-vv-name="brand"]',
     'input[id*="brand"]',
@@ -212,8 +293,14 @@
         }
       }
       // Poshmark requires an original price >= the listing price; buyers see
-      // the difference as a discount.
-      setNativeValue(originalEl, String(Math.max(price, Math.round(price * 1.8))));
+      // the difference as a discount. The figure comes from lib/crosslist so
+      // the rule lives in one place - the local multiplier that used to be
+      // here was a second copy of it.
+      const original =
+        Number.isFinite(Number(listing.originalPrice)) && Number(listing.originalPrice) >= price
+          ? Number(listing.originalPrice)
+          : Math.max(price, Math.round(price * 1.8));
+      setNativeValue(originalEl, String(original));
       setNativeValue(listingEl, String(price));
       return;
     }
@@ -319,14 +406,41 @@
         }
       }
 
-      if ((listing.size || "").trim()) {
-        const sizeInput = document.querySelector(
-          'input[placeholder*="size" i], select[name*="size" i], [data-vv-name="size"]'
-        );
-        if (sizeInput) {
-          setNativeValue(sizeInput, listing.size.trim());
-          await wait(300);
-        }
+      // Size, colour and NWT all come from lib/crosslist already resolved.
+      const misses = [];
+
+      try {
+        const sizeResult = await fillSize((listing.size || "").trim());
+        if (!sizeResult.ok) misses.push({ label: "size", ...sizeResult });
+      } catch (err) {
+        misses.push({ label: "size", reason: err?.message || "threw" });
+      }
+
+      try {
+        const colorResult = await fillColors(listing.colors);
+        if (!colorResult.ok) misses.push({ label: "colour", ...colorResult });
+      } catch (err) {
+        misses.push({ label: "colour", reason: err?.message || "threw" });
+      }
+
+      try {
+        const nwtResult = setNwt(listing.nwt);
+        if (!nwtResult.ok) misses.push({ label: "new-with-tags", ...nwtResult });
+        await wait(200);
+      } catch (err) {
+        misses.push({ label: "new-with-tags", reason: err?.message || "threw" });
+      }
+
+      if (misses.length) {
+        // A value our table holds that the form will not take means the
+        // table is wrong; keep it rather than lose it.
+        chrome.storage.local.set({
+          poshmark_field_last_failures: {
+            at: new Date().toISOString(),
+            inventoryId: listing.inventoryId || null,
+            misses: misses,
+          },
+        });
       }
 
       showProgress(6, 6, "Done");
@@ -334,7 +448,14 @@
       removeProgress();
 
       const msg = photoMessage("Poshmark", photos.attempted, photos.succeeded);
-      showNotification(msg.text, msg.type);
+      if (misses.length) {
+        showNotification(
+          msg.text + " — check by hand: " + misses.map((m) => m.label).join(", "),
+          "error"
+        );
+      } else {
+        showNotification(msg.text, msg.type);
+      }
 
       if (!navigationWatched) {
         navigationWatched = true;

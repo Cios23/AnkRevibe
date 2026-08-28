@@ -197,6 +197,22 @@
           btn.title = "No " + platform + "_price set";
           btn.style.opacity = "0.5";
         }
+        const mapped = globalThis.AnkCrosslist
+          ? globalThis.AnkCrosslist.lookup(platform, item.id)
+          : null;
+
+        // Surface a mapping problem on the card rather than silently filling
+        // a partial form. The button stays enabled: a listing that is 90%
+        // filled is still worth opening, and refusing to crosspost over an
+        // unmapped optional field would be worse than filling most of it.
+        if (!mapped) {
+          btn.title = "No mapping - run npm run crosslist:generate-map";
+          btn.textContent = platform + " ?";
+        } else if (mapped.errors.length) {
+          btn.title = mapped.errors.join("\n");
+          btn.textContent = platform + " !";
+        }
+
         btn.addEventListener("click", () => {
           chrome.runtime.sendMessage(
             {
@@ -207,8 +223,6 @@
                 title: item.title,
                 description: item.description,
                 brand: item.brand,
-                size: item.size,
-                condition: item.condition,
                 price,
                 // Carried so the listing payload is self-describing. The
                 // offer automation does NOT read it from here - it runs on
@@ -216,16 +230,23 @@
                 // map the background builds. See lib/sync.js.
                 purchaseCost:
                   item.purchase_cost == null ? null : Number(item.purchase_cost),
-                // Mapped server-side and baked into
-                // lib/category-map.generated.js, so the rules live in one
-                // place rather than being reimplemented in browser JS.
-                categoryPath: globalThis.AnkCategoryMap
-                  ? globalThis.AnkCategoryMap.lookup(
-                      platform,
-                      item.category,
-                      item.subcategory,
-                    )
-                  : null,
+                // Every field below was resolved by lib/crosslist when
+                // lib/crosslist-map.generated.js was built, so the rules live
+                // in one place rather than being reimplemented in browser JS.
+                // A null mapping means the table predates this item: fall
+                // back to the raw values and say so, rather than filling
+                // nothing.
+                categoryPath: mapped ? mapped.categoryPath : null,
+                size: mapped ? mapped.size : item.size,
+                colors: mapped ? mapped.colors : [],
+                condition: mapped ? mapped.condition : item.condition,
+                styleTags: mapped ? mapped.styleTags : [],
+                nwt: mapped ? mapped.nwt : undefined,
+                originalPrice: mapped ? mapped.originalPrice : null,
+                depopSource: mapped ? mapped.source : null,
+                depopAge: mapped ? mapped.age : null,
+                mappingStale: !mapped,
+                mappingErrors: mapped ? mapped.errors : [],
                 photos: item.photos,
               },
             },

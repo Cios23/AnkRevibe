@@ -61,42 +61,70 @@
   }
 
   /**
-   * Depop offers only New / Used as buttons, not a dropdown.
+   * The listing form's fields, in the order they are filled.
    *
-   * Anything eBay would call new-with-tags or new-without-tags maps to New;
-   * everything else is Used. Our imported items carry eBay's display names,
-   * so match on those as well as our own vocabulary.
+   * Category first: on a react-select form the later fields can depend on it,
+   * and filling in the order a person would is the safest assumption.
+   *
+   * Every value here was resolved by lib/crosslist before the popup handed
+   * the listing over. Nothing on this page maps anything - see
+   * lib/crosslist-map.generated.js for why.
    */
-  function isNewCondition(condition) {
-    const value = (condition || "").toLowerCase();
-    if (!value) return false;
-    return (
-      value.indexOf("new") >= 0 &&
-      value.indexOf("pre-owned") === -1 &&
-      value.indexOf("preowned") === -1
-    );
+  const FIELDS = [
+    { id: "condition-input", from: (l) => l.condition, label: "condition" },
+    { id: "colour-input", from: (l) => (l.colors || [])[0], label: "colour" },
+    { id: "source-input", from: (l) => l.depopSource, label: "source" },
+    { id: "age-input", from: (l) => l.depopAge, label: "age" },
+    { id: "style-input", from: (l) => (l.styleTags || [])[0], label: "style" },
+  ];
+
+  /**
+   * Fill the dropdown fields, collecting rather than throwing.
+   *
+   * Only category and condition are required by Depop; the rest are optional,
+   * so one that cannot be set must not abandon a listing that is otherwise
+   * complete. Every miss is recorded, because a value our table holds that
+   * the form will not accept means the table is wrong - and that is exactly
+   * the bug that had Depop conditions set to strings the form rejects.
+   */
+  async function fillSelectFields(listing) {
+    const misses = [];
+    const select = globalThis.AnkDepopSelect;
+    if (!select) return misses;
+
+    if (Array.isArray(listing.categoryPath) && listing.categoryPath.length) {
+      const result = await select.selectCategoryPath(
+        "group-input",
+        listing.categoryPath
+      );
+      if (!result.ok) misses.push(Object.assign({ label: "category" }, result));
+    } else {
+      misses.push({ label: "category", reason: "no-mapping" });
+    }
+
+    for (const field of FIELDS) {
+      const wanted = field.from(listing);
+      if (!wanted) continue;
+      const result = await select.selectValue(field.id, wanted);
+      if (!result.ok) misses.push(Object.assign({ label: field.label }, result));
+    }
+
+    return misses;
   }
 
-  function clickConditionButton(isNew) {
-    const selectors = isNew
-      ? [
-          '[data-testid="new-condition"]',
-          'button[data-testid="new-condition"]',
-          'button[value="new"]',
-        ]
-      : [
-          '[data-testid="used-condition"]',
-          'button[data-testid="used-condition"]',
-          'button[value="used"]',
-        ];
-    for (const sel of selectors) {
-      const btn = document.querySelector(sel);
-      if (btn) {
-        btn.click();
-        return true;
-      }
-    }
-    return false;
+  /**
+   * Brand is a search-driven autocomplete over a large dataset, not a fixed
+   * list, so the value is typed and left for Depop to match. Confirmed by
+   * scraping: the default view shows an unrelated sample, and typing returns
+   * a different filtered set.
+   */
+  async function fillBrand(listing) {
+    const brand = (listing.brand || "").trim();
+    if (!brand) return;
+    const input = document.getElementById("brand-input");
+    if (!input) return;
+    setNativeValue(input, brand);
+    await wait(600);
   }
 
   /** Depop navigates to /products/<slug> once the listing is created. */
@@ -146,15 +174,42 @@
       }
 
       try {
-        if (clickConditionButton(isNewCondition(listing.condition))) {
-          await wait(300);
-        }
+        await fillBrand(listing);
       } catch {
-        /* condition buttons not rendered */
+        /* brand field not rendered */
+      }
+
+      let misses = [];
+      try {
+        misses = await fillSelectFields(listing);
+      } catch (err) {
+        misses.push({ label: "dropdowns", reason: err?.message || "threw" });
+      }
+
+      if (misses.length) {
+        // Kept so a wrong value in our tables is a one-line fix rather than
+        // a mystery weeks later.
+        chrome.storage.local.set({
+          depop_field_last_failures: {
+            at: new Date().toISOString(),
+            inventoryId: listing.inventoryId || null,
+            misses: misses,
+          },
+        });
       }
 
       const msg = photoMessage("Depop", photos.attempted, photos.succeeded);
-      showNotification(msg.text, msg.type);
+      if (misses.length) {
+        // Say which fields need a hand rather than implying a clean fill.
+        showNotification(
+          msg.text +
+            " — check by hand: " +
+            misses.map((m) => m.label).join(", "),
+          "error"
+        );
+      } else {
+        showNotification(msg.text, msg.type);
+      }
 
       if (!navigationWatched) {
         navigationWatched = true;
