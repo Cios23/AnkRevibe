@@ -174,9 +174,9 @@ describe('every band is reachable', () => {
 
 describe('policy costs are recorded from the live account', () => {
   test('T Shirts/Shorts charges $6 despite being NAMED $5', () => {
-    // Read from the policy itself. The label was never updated, so trusting
-    // the name would have every t-shirt priced a dollar under what eBay
-    // actually charges.
+    // The rate was deliberately raised from $5 to $6 when postage went up;
+    // the policy name was never changed to match. $6 is correct. This test
+    // exists so nobody "fixes" the value back to $5 to agree with the label.
     assert.equal(FULFILLMENT_POLICIES['tshirts-shorts'].costUsd, 6)
     assert.match(FULFILLMENT_POLICIES['tshirts-shorts'].label, /\$5/)
   })

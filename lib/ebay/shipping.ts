@@ -30,11 +30,14 @@ export type PolicyDefinition = {
   id: string
   /**
    * eBay's own name for the policy. Kept verbatim so the live list can be
-   * matched against it - NOT a source of truth for the price. "T Shirts/
-   * Shorts $5" actually charges $6; the name was never updated.
+   * matched against it - and NOT a source of truth for the price. Names
+   * drift; the id and the configured rate do not.
    */
   label: string
-  /** The flat rate actually configured, read from the policy on 2026-08-27. */
+  /**
+   * The flat rate actually configured, read from the policy itself on
+   * 2026-08-27 rather than parsed out of its name.
+   */
   costUsd: number
   envVar: string
 }
@@ -44,7 +47,10 @@ export const FULFILLMENT_POLICIES: Record<ShippingBand, PolicyDefinition> = {
     band: 'tshirts-shorts',
     id: '261742192018',
     label: 'T Shirts/Shorts $5',
-    // The NAME says $5. The policy charges $6.
+    // Named "$5", charges $6. Deliberate: the rate was raised from $5 to $6
+    // when postage went up, and the policy name was never renamed to match.
+    // $6 is correct and current. Nothing here reads the label for pricing -
+    // selection is by id - so the stale name is cosmetic.
     costUsd: 6,
     envVar: 'EBAY_POLICY_TSHIRTS',
   },
