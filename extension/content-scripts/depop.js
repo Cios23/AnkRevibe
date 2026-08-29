@@ -92,14 +92,30 @@
     const select = globalThis.AnkDepopSelect;
     if (!select) return misses;
 
+    let categoryOk = false;
+
     if (Array.isArray(listing.categoryPath) && listing.categoryPath.length) {
       const result = await select.selectCategoryPath(
         "group-input",
         listing.categoryPath
       );
+      categoryOk = Boolean(result.ok);
       if (!result.ok) misses.push(Object.assign({ label: "category" }, result));
     } else {
       misses.push({ label: "category", reason: "no-mapping" });
+    }
+
+    // The rest wait on the category. On a listing form the later fields are
+    // routinely gated behind it - Poshmark disables Size and Colour outright
+    // until one is set - and attempting them early does not merely fail, it
+    // reports "not found" and buries the real cause.
+    if (!categoryOk) {
+      for (const field of FIELDS) {
+        if (field.from(listing)) {
+          misses.push({ label: field.label, reason: "skipped-category-not-set" });
+        }
+      }
+      return misses;
     }
 
     for (const field of FIELDS) {
@@ -200,11 +216,13 @@
 
       const msg = photoMessage("Depop", photos.attempted, photos.succeeded);
       if (misses.length) {
-        // Say which fields need a hand rather than implying a clean fill.
+        // If the category failed it took the rest with it; name that rather
+        // than listing every field as though each broke separately.
+        const failedCategory = misses.some((m) => m.label === "category");
         showNotification(
-          msg.text +
-            " — check by hand: " +
-            misses.map((m) => m.label).join(", "),
+          failedCategory
+            ? msg.text + " — category could not be set, so the rest were skipped"
+            : msg.text + " — check by hand: " + misses.map((m) => m.label).join(", "),
           "error"
         );
       } else {

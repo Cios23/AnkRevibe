@@ -107,6 +107,35 @@ describe('chooseOption', () => {
   })
 })
 
+describe('the dropdown driver polls rather than reading once', () => {
+  test('exposes waitForRows', () => {
+    // The live category fill reported "no-rows" against a picker that works
+    // perfectly by hand: the rows are rendered by Vue a moment after the
+    // field opens, and the driver read once after a fixed 700ms. An empty
+    // list has to mean "not ready yet" until a deadline passes, or every
+    // slow render looks like an empty dropdown.
+    assert.equal(typeof (globalThis as any).AnkDropdown.waitForRows, 'function')
+  })
+
+  test('waitForRows gives up rather than hanging', async () => {
+    // A document that never produces rows is the timeout path: it must keep
+    // looking until the deadline, then return empty rather than either
+    // giving up instantly or waiting forever.
+    const original = (globalThis as any).document
+    ;(globalThis as any).document = { querySelectorAll: () => [] }
+    try {
+      const started = Date.now()
+      const rows = await (globalThis as any).AnkDropdown.waitForRows(null, 300)
+      const elapsed = Date.now() - started
+      assert.deepEqual(rows, [])
+      assert.ok(elapsed >= 250, `gave up after ${elapsed}ms, before the deadline`)
+      assert.ok(elapsed < 3000, `overran the deadline at ${elapsed}ms`)
+    } finally {
+      ;(globalThis as any).document = original
+    }
+  })
+})
+
 describe('the generated crosslist map', () => {
   let map: any
 

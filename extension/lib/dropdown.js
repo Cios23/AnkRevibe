@@ -148,6 +148,31 @@
   }
 
   /**
+   * Wait for rows to appear at all.
+   *
+   * The list is rendered by Vue and populated a moment after the field
+   * opens, so reading once after a fixed delay catches an empty menu and
+   * concludes the field has no options. That is what made the live Poshmark
+   * category fill report "no-rows" against a dropdown that works perfectly
+   * by hand - the same mistake that made Depop's condition look empty when
+   * it has five values.
+   *
+   * An empty list means "not ready yet", not "nothing here", until the
+   * deadline passes.
+   */
+  async function waitForRows(root, timeout = 8000) {
+    const deadline = Date.now() + timeout;
+    for (;;) {
+      let rows = visibleRows(root);
+      // Some builds render the menu in a portal outside the field.
+      if (!rows.length) rows = visibleRows(document);
+      if (rows.length) return rows;
+      if (Date.now() >= deadline) return [];
+      await wait(150);
+    }
+  }
+
+  /**
    * Wait until the visible rows differ from `previous`.
    *
    * This is what makes nested navigation safe - see note 2 in the header.
@@ -170,8 +195,10 @@
    * one-line fix rather than a mystery.
    */
   async function selectNestedPath(container, path, options = {}) {
-    const openDelay = options.openDelay ?? 700;
+    const openDelay = options.openDelay ?? 400;
     const settleDelay = options.settleDelay ?? 500;
+    /** How long to keep looking for rows before calling the list empty. */
+    const rowTimeout = options.rowTimeout ?? 8000;
 
     if (!container) return { ok: false, reason: "no-container" };
     if (!Array.isArray(path) || path.length === 0) {
@@ -181,6 +208,11 @@
     const trigger =
       container.querySelector('input, [role="combobox"], [role="button"], button') ||
       container;
+
+    // mousedown as well as click: some pickers open on mousedown and ignore
+    // a bare click. Sending both costs nothing and covers either.
+    trigger.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+    trigger.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
     trigger.click();
     await wait(openDelay);
 
@@ -190,13 +222,16 @@
       const wanted = path[level];
       if (wanted == null) continue;
 
-      let rows = visibleRows(container);
+      const rows = await waitForRows(container, rowTimeout);
       if (!rows.length) {
-        // Some builds render the menu in a portal outside the field.
-        rows = visibleRows(document);
-      }
-      if (!rows.length) {
-        return { ok: false, reason: "no-rows", level, wanted, trace };
+        return {
+          ok: false,
+          reason: "no-rows",
+          level,
+          wanted,
+          waitedMs: rowTimeout,
+          trace,
+        };
       }
 
       const before = rowSignature(rows);
@@ -245,6 +280,7 @@
   }
 
   globalThis.AnkDropdown = {
+    waitForRows,
     ROW_SELECTOR,
     isExcludedRow: isExcluded,
     chooseOption,

@@ -83,6 +83,30 @@
     '[class*="listing-editor__subcategory-container"]',
   ];
 
+  /**
+   * Wait for one of `selectors` to exist AND be usable.
+   *
+   * Size and Colour are gated behind Category on the live page - clicking
+   * them before a category is set shows "pick a category first". So they are
+   * not merely filled later, they are waited for: the field does not exist
+   * in a usable form until the category commits.
+   */
+  async function waitForContainer(selectors, timeout = 8000) {
+    const deadline = Date.now() + timeout;
+    for (;;) {
+      const el = firstContainer(selectors);
+      if (el) {
+        const disabled =
+          el.getAttribute("aria-disabled") === "true" ||
+          el.classList.contains("disabled") ||
+          Boolean(el.querySelector("[disabled]"));
+        if (!disabled) return el;
+      }
+      if (Date.now() >= deadline) return null;
+      await wait(200);
+    }
+  }
+
   function firstContainer(selectors) {
     for (const selector of selectors) {
       const el = document.querySelector(selector);
@@ -162,7 +186,7 @@
   async function fillSize(size) {
     if (!size) return { ok: false, reason: "no-mapping" };
 
-    const container = firstContainer(SEL_SIZE_CONTAINER);
+    const container = await waitForContainer(SEL_SIZE_CONTAINER);
     if (!container) return { ok: false, reason: "no-container", step: "size" };
 
     const direct = await globalThis.AnkDropdown.selectNestedPath(container, [size]);
@@ -186,7 +210,7 @@
       return { ok: false, reason: "no-mapping" };
     }
 
-    const container = firstContainer(SEL_COLOR_CONTAINER);
+    const container = await waitForContainer(SEL_COLOR_CONTAINER);
     if (!container) return { ok: false, reason: "no-container", step: "color" };
 
     const missed = [];
@@ -364,12 +388,25 @@
         await wait(500);
       }
 
+      // Category first, and everything gated behind it waits on the result.
+      // Size and Colour are not merely later in the form - they are disabled
+      // until a category is set, and clicking them early shows "pick a
+      // category first". Firing them in the same pass fills nothing.
       showProgress(5, 6, "Filling category...");
+      const misses = [];
+      let categoryOk = false;
+
       if (listing.categoryPath) {
         const categoryResult = await fillCategory(listing.categoryPath);
+
+        // The picker reports its own selection; trust that over the clicks
+        // having landed.
+        categoryOk = Boolean(categoryResult.ok);
+
         if (categoryResult.ok && categoryResult.subcategory && !categoryResult.subcategory.ok) {
           // Optional field, so the listing still stands - but a miss here is
           // usually a wrong name in our mapping table.
+          misses.push({ label: "subcategory", ...categoryResult.subcategory });
           chrome.storage.local.set({
             poshmark_subcategory_last_failure: {
               at: new Date().toISOString(),
@@ -379,6 +416,7 @@
           });
         }
         if (!categoryResult.ok) {
+          misses.push({ label: "category", ...categoryResult });
           // Kept so a wrong name in our mapping table is a one-line fix
           // rather than a mystery.
           chrome.storage.local.set({
@@ -388,6 +426,8 @@
             },
           });
         }
+      } else {
+        misses.push({ label: "category", reason: "no-mapping" });
       }
 
       showProgress(5, 6, "Filling price & details...");
@@ -407,28 +447,40 @@
       }
 
       // Size, colour and NWT all come from lib/crosslist already resolved.
-      const misses = [];
+      //
+      // They only run once the category has taken. Attempting them after a
+      // failed category is not merely useless - the fields are disabled, so
+      // the attempt reports "not found" and buries the real cause, which is
+      // always the category.
+      if (!categoryOk) {
+        showProgress(6, 6, "Category failed - skipping gated fields");
+        for (const label of ["size", "colour", "new-with-tags"]) {
+          misses.push({ label, reason: "skipped-category-not-set" });
+        }
+      } else {
+        showProgress(6, 6, "Filling size, colour...");
 
-      try {
-        const sizeResult = await fillSize((listing.size || "").trim());
-        if (!sizeResult.ok) misses.push({ label: "size", ...sizeResult });
-      } catch (err) {
-        misses.push({ label: "size", reason: err?.message || "threw" });
-      }
+        try {
+          const sizeResult = await fillSize((listing.size || "").trim());
+          if (!sizeResult.ok) misses.push({ label: "size", ...sizeResult });
+        } catch (err) {
+          misses.push({ label: "size", reason: err?.message || "threw" });
+        }
 
-      try {
-        const colorResult = await fillColors(listing.colors);
-        if (!colorResult.ok) misses.push({ label: "colour", ...colorResult });
-      } catch (err) {
-        misses.push({ label: "colour", reason: err?.message || "threw" });
-      }
+        try {
+          const colorResult = await fillColors(listing.colors);
+          if (!colorResult.ok) misses.push({ label: "colour", ...colorResult });
+        } catch (err) {
+          misses.push({ label: "colour", reason: err?.message || "threw" });
+        }
 
-      try {
-        const nwtResult = setNwt(listing.nwt);
-        if (!nwtResult.ok) misses.push({ label: "new-with-tags", ...nwtResult });
-        await wait(200);
-      } catch (err) {
-        misses.push({ label: "new-with-tags", reason: err?.message || "threw" });
+        try {
+          const nwtResult = setNwt(listing.nwt);
+          if (!nwtResult.ok) misses.push({ label: "new-with-tags", ...nwtResult });
+          await wait(200);
+        } catch (err) {
+          misses.push({ label: "new-with-tags", reason: err?.message || "threw" });
+        }
       }
 
       if (misses.length) {
@@ -449,10 +501,12 @@
 
       const msg = photoMessage("Poshmark", photos.attempted, photos.succeeded);
       if (misses.length) {
-        showNotification(
-          msg.text + " — check by hand: " + misses.map((m) => m.label).join(", "),
-          "error"
-        );
+        // When the category failed, say THAT rather than listing the three
+        // fields it took down with it.
+        const text = categoryOk
+          ? msg.text + " — check by hand: " + misses.map((m) => m.label).join(", ")
+          : msg.text + " — category could not be set, so size and colour were skipped";
+        showNotification(text, "error");
       } else {
         showNotification(msg.text, msg.type);
       }
