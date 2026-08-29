@@ -33,7 +33,11 @@ try {
 
 const { mapListing } = await import('../lib/crosslist')
 const { CROSSLIST_PLATFORMS } = await import('../lib/crosslist/types')
-import type { CrosslistItem, CrosslistPlatform } from '../lib/crosslist/types'
+import type {
+  CrosslistItem,
+  CrosslistPlatform,
+  ValidationIssue,
+} from '../lib/crosslist/types'
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -75,7 +79,7 @@ for (let from = 0; ; from += 1000) {
     .eq('status', 'active')
     .range(from, from + 999)
   if (error) throw new Error(error.message)
-  rows.push(...((data ?? []) as Row[]))
+  rows.push(...((data ?? []) as unknown as Row[]))
   if (!data || data.length < 1000) break
 }
 
@@ -145,8 +149,8 @@ for (const row of rows) {
       colors: listing.colors,
       condition: listing.condition,
       styleTags: listing.styleTags,
-      errors: result.errors.map((e) => `${e.field}: ${e.message}`),
-      warnings: result.warnings.map((w) => `${w.field}: ${w.message}`),
+      errors: result.errors.map((e: ValidationIssue) => `${e.field}: ${e.message}`),
+      warnings: result.warnings.map((w: ValidationIssue) => `${w.field}: ${w.message}`),
     }
 
     if (platform === 'poshmark') {
