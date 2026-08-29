@@ -96,24 +96,139 @@
   }
 
   /**
-   * The dismiss button belonging to a modal with this title.
+   * The modal subtree containing a title, found WITHOUT reference to its
+   * button.
    *
-   * Walks up from the title to the first ancestor that also contains the
-   * button, which scopes the search to that modal without needing to know
-   * what the modal element is called. A bare document-wide search for "Done"
-   * could find a button belonging to something else entirely.
+   * The previous version located title and button together and returned null
+   * if either was missing - so when the button match failed there was no
+   * scope, no candidate list, and nothing to explain the failure with. The
+   * search destroyed the evidence needed to diagnose it. Scope is now
+   * established on its own, and the button is looked for inside it, so a miss
+   * can be described in full.
+   *
+   * Prefers a real dialog element, then a modal-ish class, then the nearest
+   * ancestor big enough to be a dialog rather than a text wrapper.
    */
-  function findModalButton(titlePattern, buttonPattern) {
+  function findModalScope(titlePattern) {
     for (const title of visibleLeavesMatching(titlePattern)) {
       let node = title.parentElement;
-      for (let depth = 0; node && depth < 8; depth++, node = node.parentElement) {
-        const button = visibleLeavesMatching(buttonPattern, node)[0];
-        // That ancestor is the modal: the smallest subtree holding both its
-        // title and its dismiss button. Returned so a modal can be filled in
-        // before it is dismissed, without a document-wide search.
-        if (button) return { title, button, depth, scope: node };
+      let fallback = null;
+
+      for (let depth = 0; node && depth < 12; depth++, node = node.parentElement) {
+        const role = node.getAttribute && node.getAttribute("role");
+        const className = String(node.className || "");
+        if (
+          role === "dialog" ||
+          role === "alertdialog" ||
+          node.getAttribute?.("aria-modal") === "true" ||
+          /\bmodal\b/i.test(className) ||
+          /\bdialog\b/i.test(className)
+        ) {
+          return { title, scope: node, how: "dialog-marker", depth };
+        }
+
+        // A dialog is a box, not a line of text. Remember the first ancestor
+        // large enough to be one, in case no marker is ever found.
+        if (!fallback) {
+          const rect = node.getBoundingClientRect();
+          if (rect.width > 200 && rect.height > 120) {
+            fallback = { title, scope: node, how: "size-heuristic", depth };
+          }
+        }
+      }
+
+      if (fallback) return fallback;
+    }
+    return null;
+  }
+
+  /**
+   * Everything in the modal that could plausibly be its dismiss button, and
+   * why each did or did not match.
+   *
+   * This is the record that was missing. "button-not-found" says nothing
+   * actionable; the real label - with its whitespace, its icon siblings, its
+   * casing - is a one-line fix.
+   */
+  function describeModalCandidates(scope, buttonPattern) {
+    if (!scope) return [];
+    const out = [];
+    const nodes = scope.querySelectorAll(
+      'button,[role="button"],a,[type="submit"],[class*="btn"],[class*="button"],span,div'
+    );
+
+    for (const el of nodes) {
+      const raw = String(el.textContent || "");
+      const text = normText(el);
+      if (!text || text.length > 40) continue;
+
+      const hasSameTextChild = Array.from(el.children).some(
+        (c) => normText(c) === text
+      );
+      const visible = elementIsVisible(el);
+      const record = {
+        tag: el.tagName,
+        text: text,
+        // Raw form matters: a non-breaking space or a stray newline is
+        // invisible in the trimmed text but breaks an anchored match.
+        rawText: raw.length === text.length ? undefined : JSON.stringify(raw.slice(0, 40)),
+        charCodes:
+          /^[\x20-\x7e]*$/.test(raw) ? undefined : Array.from(raw.slice(0, 12)).map((c) => c.charCodeAt(0)),
+        className: String(el.className || "").slice(0, 60),
+        visible,
+        isLeaf: !hasSameTextChild,
+        matchesExact: buttonPattern.test(text),
+        matchesLoose: /done|apply|save|continue|next|ok/i.test(text),
+        rejectedBecause: !visible
+          ? "not visible"
+          : hasSameTextChild
+            ? "a child carries the same text, so this is a wrapper"
+            : !buttonPattern.test(text)
+              ? "text does not match " + String(buttonPattern)
+              : null,
+      };
+      out.push(record);
+      if (out.length >= 40) break;
+    }
+    return out;
+  }
+
+  /**
+   * The dismiss button inside an already-located modal.
+   *
+   * Exact label first. Failing that, a loose match but only on something that
+   * is genuinely a button - a stuck modal blocks the entire listing, and
+   * clicking a control labelled "Done something" beats abandoning the fill.
+   * Never a loose match on arbitrary text, and always reported, because a
+   * label we had to guess at is a table to correct rather than a success.
+   */
+  function findDismissButton(scope, buttonPattern) {
+    if (!scope) return null;
+
+    const exact = visibleLeavesMatching(buttonPattern, scope)[0];
+    if (exact) return { el: exact, how: "exact" };
+
+    const buttonish = Array.from(
+      scope.querySelectorAll('button,[role="button"],[type="submit"],[class*="btn"]')
+    ).filter(elementIsVisible);
+
+    for (const el of buttonish) {
+      const text = normText(el);
+      if (text && text.length <= 40 && buttonPattern.test(text)) {
+        return { el, how: "button-element-exact" };
       }
     }
+
+    // Same word, extra decoration around it: "Done ✓", "  Done".
+    const loose = String(buttonPattern).replace(/^\/\^|\$\/i?$/g, "");
+    const looseRe = new RegExp(loose, "i");
+    for (const el of buttonish) {
+      const text = normText(el);
+      if (text && text.length <= 40 && looseRe.test(text)) {
+        return { el, how: "loose:" + text };
+      }
+    }
+
     return null;
   }
 
@@ -140,19 +255,20 @@
         continue;
       }
       const deadline = Date.now() + timeout;
-      let found = null;
+      let located = null;
+      let button = null;
 
       // It may still be rendering, or waiting on the upload behind it.
       while (Date.now() < deadline) {
-        found = findModalButton(modal.title, modal.button);
-        if (found) break;
-        // Nothing on screen with that title: it either has not appeared yet,
-        // or this listing never triggers it.
-        if (!visibleLeavesMatching(modal.title).length) await wait(400);
-        else await wait(200);
+        located = findModalScope(modal.title);
+        if (located) {
+          button = findDismissButton(located.scope, modal.button);
+          if (button) break;
+        }
+        await wait(located ? 200 : 400);
       }
 
-      if (!found) {
+      if (!button) {
         const titleOnScreen = visibleLeavesMatching(modal.title).length > 0;
         results.push({
           modal: modal.name,
@@ -160,9 +276,21 @@
           reason: titleOnScreen ? "button-not-found" : "never-appeared",
           waitedMs: timeout,
           button: String(modal.button),
+          // The evidence the old code threw away: where the modal was, and
+          // every candidate inside it with the reason it was passed over.
+          scopeFoundBy: located ? located.how : null,
+          scopeDepth: located ? located.depth : null,
+          scopeTag: located ? located.scope.tagName : null,
+          scopeClass: located ? String(located.scope.className || "").slice(0, 80) : null,
+          scopeText: located ? normText(located.scope).slice(0, 200) : null,
+          candidates: located
+            ? describeModalCandidates(located.scope, modal.button)
+            : [],
         });
         continue;
       }
+
+      const found = { button: button.el, scope: located.scope, how: button.how };
 
       if (modal.prepare) {
         try {
@@ -190,6 +318,9 @@
         ok: !stillThere,
         reason: stillThere ? "still-open-after-click" : "dismissed",
         clicked: normText(found.button),
+        // A label we had to reach for loosely is a table to correct, even
+        // when the click worked.
+        matchedBy: found.how,
       });
     }
 
