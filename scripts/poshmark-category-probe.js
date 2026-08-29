@@ -135,7 +135,7 @@
     return report;
   };
 
-  const before = countRows("BEFORE opening");
+  countRows("BEFORE opening");
 
   // ------------------------------------------------------- open and diff
   head("=== 3. opening it, and diffing the whole document ===");

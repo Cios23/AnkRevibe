@@ -107,6 +107,144 @@ describe('chooseOption', () => {
   })
 })
 
+describe('finding the element that actually opens a picker', () => {
+  /**
+   * A stand-in for a DOM node, enough for findTrigger: it matches selectors
+   * against a declared attribute list and searches its own descendants.
+   */
+  type Fake = {
+    tag: string
+    attrs: Record<string, string>
+    children: Fake[]
+    isConnected: boolean
+    matches(selector: string): boolean
+    querySelectorAll(selector: string): Fake[]
+    getBoundingClientRect(): { width: number; height: number }
+  }
+
+  const el = (
+    tag: string,
+    attrs: Record<string, string> = {},
+    children: Fake[] = [],
+    { hidden = false } = {},
+  ): Fake => {
+    const node: Fake = {
+      tag,
+      attrs,
+      children,
+      isConnected: true,
+      getBoundingClientRect: () => (hidden ? { width: 0, height: 0 } : { width: 120, height: 32 }),
+      matches(selector: string) {
+        if (selector === node.tag) return true
+        const attr = selector.match(/^\[([a-z-]+)(?:="([^"]*)")?\]/)
+        if (attr) {
+          const [, name, value] = attr
+          if (!(name in node.attrs)) return false
+          if (value !== undefined && node.attrs[name] !== value) return false
+          // The :not([tabindex="-1"]) tail on the last selector.
+          if (selector.includes(':not([tabindex="-1"])')) return node.attrs.tabindex !== '-1'
+          return true
+        }
+        return false
+      },
+      querySelectorAll(selector: string) {
+        const out: Fake[] = []
+        const walk = (n: Fake) => {
+          for (const child of n.children) {
+            if (child.matches(selector)) out.push(child)
+            walk(child)
+          }
+        }
+        walk(node)
+        return out
+      },
+    }
+    return node
+  }
+
+  let findTrigger: (container: unknown) => { how: string; fellBack: boolean; el: unknown }
+
+  before(() => {
+    // isVisible calls window.getComputedStyle; the fakes above supply the rest.
+    ;(globalThis as any).window = {
+      getComputedStyle: () => ({ visibility: 'visible', display: 'block' }),
+    }
+    findTrigger = (globalThis as any).AnkDropdown.findTrigger
+  })
+
+  test('finds Poshmark’s real category control', () => {
+    // The exact element from the live page. It is a div - not an input, not a
+    // button, and with no role - so the old lookup found nothing, clicked the
+    // wrapper, and Vue ignored it. The picker never opened, which the driver
+    // then reported as "no rows" after polling an empty document for 8s.
+    const container = el('div', { class: 'listing-editor__category-container' }, [
+      el('div', {
+        'aria-haspopup': 'true',
+        tabindex: '0',
+        'data-test': 'dropdown',
+        class: 'dropdown d--b',
+      }),
+    ])
+
+    const found = findTrigger(container)
+    assert.equal(found.fellBack, false, 'fell back to the container again')
+    assert.equal(found.how, '[data-test="dropdown"]')
+    assert.notEqual(found.el, container)
+  })
+
+  test('aria-haspopup alone is enough', () => {
+    // data-test is Poshmark's own hook and could be renamed; aria-haspopup is
+    // the accessible contract for "I own a popup" and should carry any
+    // framework.
+    const container = el('div', {}, [el('div', { 'aria-haspopup': 'true' })])
+    const found = findTrigger(container)
+    assert.equal(found.how, '[aria-haspopup="true"]')
+    assert.equal(found.fellBack, false)
+  })
+
+  test('the specific hook beats a generic button', () => {
+    // Priority order, not document order: a clear-selection button sitting
+    // before the control must not win.
+    const container = el('div', {}, [
+      el('button', {}),
+      el('div', { 'data-test': 'dropdown' }),
+    ])
+    assert.equal(findTrigger(container).how, '[data-test="dropdown"]')
+  })
+
+  test('the old selectors still work where they applied', () => {
+    // Nothing that was already opening must stop.
+    assert.equal(findTrigger(el('div', {}, [el('input', {})])).how, 'input')
+    assert.equal(
+      findTrigger(el('div', {}, [el('div', { role: 'combobox' })])).how,
+      '[role="combobox"]',
+    )
+  })
+
+  test('the container itself can be the control', () => {
+    const container = el('div', { 'data-test': 'dropdown' })
+    const found = findTrigger(container)
+    assert.equal(found.el, container)
+    assert.equal(found.fellBack, false, 'this is a real match, not a fallback')
+  })
+
+  test('a hidden match beats giving up, and is flagged', () => {
+    const hidden = el('div', { 'data-test': 'dropdown' }, [], { hidden: true })
+    const found = findTrigger(el('div', {}, [hidden])) as { hidden?: boolean; el: unknown }
+    assert.equal(found.el, hidden)
+    assert.equal(found.hidden, true)
+  })
+
+  test('falling back to the container is reported, not silent', () => {
+    // This is the state that wasted a live fill: clicking a wrapper that
+    // listens for nothing looks exactly like an empty dropdown.
+    const container = el('div', {}, [el('span', {})])
+    const found = findTrigger(container)
+    assert.equal(found.fellBack, true)
+    assert.equal(found.how, 'container-fallback')
+  })
+})
+
 describe('the dropdown driver polls rather than reading once', () => {
   test('exposes waitForRows', () => {
     // The live category fill reported "no-rows" against a picker that works

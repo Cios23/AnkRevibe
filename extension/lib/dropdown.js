@@ -5,6 +5,12 @@
 // Boys...); clicking one REPLACES the list with that department's categories;
 // clicking a category replaces it again with subcategories.
 //
+// CONFIRMED TRIGGER: the control is
+//   <div aria-haspopup="true" tabindex="0" data-test="dropdown" class="dropdown d--b">
+// - a div, not an input or a button. Clicking its wrapper does nothing at
+// all, and a picker that never opened is indistinguishable from one with no
+// options unless the driver says which element it clicked.
+//
 // CONFIRMED ROW SELECTOR: .dropdown__link.dropdown__menu__item
 // The current selection is reflected in a `selectedvalue` attribute on the
 // outer container and in the trigger's visible span text.
@@ -41,6 +47,79 @@
     '[role="option"]',
     '[role="menuitem"]',
   ];
+
+  /**
+   * What actually opens a picker, most specific first.
+   *
+   * Poshmark's category control is
+   *   <div aria-haspopup="true" tabindex="0" data-test="dropdown" class="dropdown d--b">
+   * which matches none of input / [role=combobox] / [role=button] / button.
+   * The old lookup therefore found nothing, fell back to clicking the outer
+   * container, and Vue - which listens on that inner div - ignored it. The
+   * picker never opened, so the driver polled an empty document for eight
+   * seconds and reported "no rows", which reads exactly like a dropdown with
+   * no options. A click on the wrong element and a control with nothing in it
+   * are indistinguishable from the outside; that is what made this expensive.
+   *
+   * Ordered by how much each selector actually tells us. data-test="dropdown"
+   * is Poshmark's own hook for this control; aria-haspopup is the accessible
+   * contract for "I own a popup" and is the right general answer for any
+   * framework. The old four come last, unchanged, so nothing that worked
+   * before stops working.
+   *
+   * Note this is priority order, not document order - the previous single
+   * querySelector returned whichever matched first in the DOM regardless of
+   * how specific it was.
+   */
+  const TRIGGER_SELECTORS = [
+    '[data-test="dropdown"]',
+    '[aria-haspopup="true"]',
+    '[role="combobox"]',
+    "input",
+    '[role="button"]',
+    "button",
+    // Last resort: focusable, so at least it is meant to be interacted with.
+    '[tabindex]:not([tabindex="-1"])',
+  ];
+
+  /**
+   * The element to click to open `container`'s picker.
+   *
+   * Prefers a visible match, accepts an invisible one over giving up, and
+   * reports which selector won so a failure says WHY rather than just that
+   * nothing happened.
+   */
+  function findTrigger(container) {
+    if (!container) return { el: null, how: "no-container", fellBack: true };
+
+    for (const selector of TRIGGER_SELECTORS) {
+      let matches = [];
+      try {
+        matches = Array.from(container.querySelectorAll(selector));
+      } catch {
+        continue;
+      }
+      // The container can be the control itself rather than its wrapper.
+      try {
+        if (container.matches && container.matches(selector)) matches.push(container);
+      } catch {
+        /* invalid selector for matches() */
+      }
+      if (!matches.length) continue;
+
+      const visible = matches.find(isVisible);
+      return {
+        el: visible || matches[0],
+        how: selector,
+        fellBack: false,
+        hidden: !visible,
+      };
+    }
+
+    // Clicking the wrapper is what silently did nothing. Keep it as a last
+    // resort, but flag it so the failure is legible.
+    return { el: container, how: "container-fallback", fellBack: true };
+  }
 
   /**
    * Rows that are navigation, not categories.
@@ -154,7 +233,7 @@
    * picker never opened, it opened somewhere we did not look, or it opened
    * and its markup no longer matches ROW_SELECTOR.
    */
-  function describeEmptyMenu(container, trigger) {
+  function describeEmptyMenu(container, trigger, found) {
     const counts = {};
     for (const sel of [ROW_SELECTOR, ...ROW_FALLBACKS]) {
       try {
@@ -181,7 +260,9 @@
 
     return {
       triggerTag: trigger ? trigger.tagName : null,
-      triggerWasContainer: trigger === container,
+      triggerFoundBy: found ? found.how : null,
+      triggerWasHidden: Boolean(found && found.hidden),
+      triggerWasContainer: Boolean(found ? found.fellBack : trigger === container),
       containerVisible: isVisible(container),
       containerSelectedValue: container.getAttribute("selectedvalue"),
       containerChildren: container.children.length,
@@ -249,12 +330,8 @@
       return { ok: false, reason: "no-path" };
     }
 
-    // Note when this falls back to the container: a Vue component that
-    // listens on an inner element ignores a click on its wrapper, which
-    // looks identical to a picker with no options.
-    const trigger =
-      container.querySelector('input, [role="combobox"], [role="button"], button') ||
-      container;
+    const found = findTrigger(container);
+    const trigger = found.el;
 
     // mousedown as well as click: some pickers open on mousedown and ignore
     // a bare click. Sending both costs nothing and covers either.
@@ -281,7 +358,7 @@
           level,
           wanted,
           waitedMs: rowTimeout,
-          diagnosis: describeEmptyMenu(container, trigger),
+          diagnosis: describeEmptyMenu(container, trigger, found),
           trace,
         };
       }
@@ -332,6 +409,7 @@
   }
 
   globalThis.AnkDropdown = {
+    findTrigger,
     waitForRows,
     ROW_SELECTOR,
     isExcludedRow: isExcluded,
