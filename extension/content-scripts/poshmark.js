@@ -42,7 +42,26 @@
    */
   const MODALS = [
     { name: "covershot", title: /select a covershot/i, button: /^apply$/i },
-    { name: "listing price", title: /^listing price$/i, button: /^done$/i },
+    {
+      name: "listing price",
+      title: /^listing price$/i,
+      button: /^done$/i,
+      /**
+       * Put the price IN before pressing Done.
+       *
+       * This dialog exists to collect a price. Dismissing it with an empty
+       * one leaves the field unsatisfied, and Poshmark raises it again at the
+       * next opportunity - which turned out to be the moment Category was
+       * clicked, so the dialog we had just closed reappeared on top of the
+       * picker and swallowed the click.
+       *
+       * Filling it here makes the price step ours: it happens once, at a
+       * point we choose, and the dialog has no reason to return. The overlay
+       * recovery still stands behind this for anything genuinely unexpected,
+       * but it is no longer what keeps this particular dialog at bay.
+       */
+      prepare: (scope, listing) => fillPriceFields(listing, scope),
+    },
   ];
 
   /** How long to wait for a modal that may still be rendering. */
@@ -89,7 +108,10 @@
       let node = title.parentElement;
       for (let depth = 0; node && depth < 8; depth++, node = node.parentElement) {
         const button = visibleLeavesMatching(buttonPattern, node)[0];
-        if (button) return { title, button, depth };
+        // That ancestor is the modal: the smallest subtree holding both its
+        // title and its dismiss button. Returned so a modal can be filled in
+        // before it is dismissed, without a document-wide search.
+        if (button) return { title, button, depth, scope: node };
       }
     }
     return null;
@@ -140,6 +162,22 @@
           button: String(modal.button),
         });
         continue;
+      }
+
+      if (modal.prepare) {
+        try {
+          modal.prepare(found.scope, settings.listing || {});
+          await wait(500);
+        } catch (err) {
+          // A dialog that cannot be filled can still be dismissed; say so
+          // rather than abandoning the fill over it.
+          results.push({
+            modal: modal.name,
+            ok: true,
+            reason: "prepared-with-errors",
+            error: err?.message || "threw",
+          });
+        }
       }
 
       found.button.click();
@@ -450,14 +488,18 @@
    * the DOM is not stable, so identify them by placeholder where possible
    * and fall back to document order.
    */
-  function fillPriceFields(listing) {
+  function fillPriceFields(listing, root) {
+    // Scoped, so the same routine serves the price MODAL and the form
+    // itself. Two copies of "which input is the original price" would drift,
+    // and the modal is where the number actually has to land.
+    const scope = root && root.isConnected ? root : document;
     const price = numericPrice(listing);
     const placeholderOf = (el) => (el?.placeholder || "").toLowerCase();
 
     const found = [];
     for (const sel of SEL_PRICE) {
       try {
-        document.querySelectorAll(sel).forEach((el) => {
+        scope.querySelectorAll(sel).forEach((el) => {
           if (el.tagName === "INPUT" && found.indexOf(el) === -1) found.push(el);
         });
       } catch {
@@ -468,7 +510,7 @@
     let nodes = found.length
       ? found
       : Array.from(
-          document.querySelectorAll(
+          scope.querySelectorAll(
             'input[type="number"], input[inputmode="decimal"], input[type="text"], input:not([type="hidden"])'
           )
         ).filter((el) => {
@@ -563,7 +605,7 @@
       // all - and says nothing about it.
       const misses = [];
       showProgress(3, 6, "Clearing dialogs...");
-      const modalResults = await dismissModals();
+      const modalResults = await dismissModals({ listing });
       for (const result of modalResults) {
         if (result.ok) continue;
         misses.push({ label: "modal:" + result.modal, ...result });
@@ -604,6 +646,18 @@
       // Size and Colour are not merely later in the form - they are disabled
       // until a category is set, and clicking them early shows "pick a
       // category first". Firing them in the same pass fills nothing.
+      // Price before category, deliberately. Poshmark raises its price
+      // dialog when the field is still empty, and the moment it picked was
+      // the category click - so the ordering is not cosmetic, it is what
+      // stops the dialog appearing on top of the picker.
+      showProgress(4, 6, "Filling price...");
+      try {
+        fillPriceFields(listing);
+        await wait(400);
+      } catch {
+        /* price inputs not rendered */
+      }
+
       showProgress(5, 6, "Filling category...");
       let categoryOk = false;
 
@@ -643,14 +697,7 @@
         misses.push({ label: "category", reason: "no-mapping" });
       }
 
-      showProgress(5, 6, "Filling price & details...");
-      try {
-        fillPriceFields(listing);
-        await wait(400);
-      } catch {
-        /* price inputs not rendered */
-      }
-
+      showProgress(5, 6, "Filling brand...");
       if ((listing.brand || "").trim()) {
         const brandInput = await findElement(SEL_BRAND, 5000);
         if (brandInput) {
