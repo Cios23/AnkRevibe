@@ -148,6 +148,50 @@
   }
 
   /**
+   * Why no rows were found, in enough detail to act on.
+   *
+   * Distinguishes the three causes that all surface as an empty list: the
+   * picker never opened, it opened somewhere we did not look, or it opened
+   * and its markup no longer matches ROW_SELECTOR.
+   */
+  function describeEmptyMenu(container, trigger) {
+    const counts = {};
+    for (const sel of [ROW_SELECTOR, ...ROW_FALLBACKS]) {
+      try {
+        counts[sel] = {
+          container: container.querySelectorAll(sel).length,
+          document: document.querySelectorAll(sel).length,
+        };
+      } catch {
+        counts[sel] = { error: true };
+      }
+    }
+
+    // Short visible labels anywhere near the field, whatever their class. If
+    // these exist the panel IS open and only the selector is wrong.
+    const labels = [];
+    for (const el of container.querySelectorAll("*")) {
+      if (!isVisible(el)) continue;
+      const text = cleanText(el);
+      if (!text || text.length > 40) continue;
+      if (Array.from(el.children).some((c) => cleanText(c) === text)) continue;
+      labels.push(text);
+      if (labels.length >= 12) break;
+    }
+
+    return {
+      triggerTag: trigger ? trigger.tagName : null,
+      triggerWasContainer: trigger === container,
+      containerVisible: isVisible(container),
+      containerSelectedValue: container.getAttribute("selectedvalue"),
+      containerChildren: container.children.length,
+      containerText: cleanText(container).slice(0, 120),
+      selectorCounts: counts,
+      shortLabelsInContainer: labels,
+    };
+  }
+
+  /**
    * Wait for rows to appear at all.
    *
    * The list is rendered by Vue and populated a moment after the field
@@ -205,6 +249,9 @@
       return { ok: false, reason: "no-path" };
     }
 
+    // Note when this falls back to the container: a Vue component that
+    // listens on an inner element ignores a click on its wrapper, which
+    // looks identical to a picker with no options.
     const trigger =
       container.querySelector('input, [role="combobox"], [role="button"], button') ||
       container;
@@ -224,12 +271,17 @@
 
       const rows = await waitForRows(container, rowTimeout);
       if (!rows.length) {
+        // "no rows" on its own says nothing about WHY. Record enough to tell
+        // a picker that never opened from one whose rows we no longer
+        // recognise - those need opposite fixes, and guessing between them
+        // has cost several rounds.
         return {
           ok: false,
           reason: "no-rows",
           level,
           wanted,
           waitedMs: rowTimeout,
+          diagnosis: describeEmptyMenu(container, trigger),
           trace,
         };
       }
