@@ -402,12 +402,18 @@
         // a picker that never opened from one whose rows we no longer
         // recognise - those need opposite fixes, and guessing between them
         // has cost several rounds.
+        // A modal can appear DURING navigation - clicking a category is
+        // enough to raise Poshmark's price dialog - so coverage is checked
+        // again here, not only before the first click. Without this the
+        // caller sees "no rows" and has no idea an overlay arrived halfway.
+        const arrived = coveredBy(trigger);
         return {
           ok: false,
-          reason: "no-rows",
+          reason: arrived ? "blocked-by-overlay" : "no-rows",
           level,
           wanted,
           waitedMs: rowTimeout,
+          coveredBy: arrived,
           diagnosis: describeEmptyMenu(container, trigger, found),
           trace,
         };

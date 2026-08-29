@@ -104,11 +104,20 @@
    * reported under its own name so it is never mistaken for the category
    * failure it would otherwise cause.
    */
-  async function dismissModals() {
+  async function dismissModals(options) {
+    const settings = options || {};
+    // Mid-fill recovery must not sit through the full first-appearance wait
+    // for a dialog that is already on screen or already gone.
+    const timeout = settings.timeout ?? MODAL_TIMEOUT;
+    const onlyIfPresent = Boolean(settings.onlyIfPresent);
     const results = [];
 
     for (const modal of MODALS) {
-      const deadline = Date.now() + MODAL_TIMEOUT;
+      if (onlyIfPresent && !visibleLeavesMatching(modal.title).length) {
+        results.push({ modal: modal.name, ok: true, reason: "not-on-screen" });
+        continue;
+      }
+      const deadline = Date.now() + timeout;
       let found = null;
 
       // It may still be rendering, or waiting on the upload behind it.
@@ -127,7 +136,7 @@
           modal: modal.name,
           ok: !titleOnScreen,
           reason: titleOnScreen ? "button-not-found" : "never-appeared",
-          waitedMs: MODAL_TIMEOUT,
+          waitedMs: timeout,
           button: String(modal.button),
         });
         continue;
@@ -286,6 +295,60 @@
       trace: sub.ok ? [...main.trace, ...sub.trace] : main.trace,
       subcategory: sub,
     };
+  }
+
+  /** Is one of the known dialogs on screen right now? */
+  function knownModalOnScreen() {
+    for (const modal of MODALS) {
+      if (visibleLeavesMatching(modal.title).length) return modal.name;
+    }
+    return null;
+  }
+
+  /**
+   * Run a field fill; if an overlay is what stopped it, clear the overlay and
+   * try that field once more.
+   *
+   * Clicking Category is itself enough to raise the price dialog, so a modal
+   * is not only a starting condition to clear once - it can arrive in the
+   * middle of the very interaction it then blocks. Reporting that as a
+   * failure would be giving up on something a single retry fixes.
+   *
+   * Exactly one retry. If the field fails again with the overlay gone, the
+   * overlay was not the problem, and retrying further would just take longer
+   * to arrive at the same wrong answer.
+   */
+  async function withOverlayRecovery(label, run) {
+    const first = await run();
+    if (first && first.ok) return first;
+
+    const blockedByOverlay =
+      Boolean(first && (first.reason === "blocked-by-overlay" || first.coveredBy)) ||
+      Boolean(knownModalOnScreen());
+
+    if (!blockedByOverlay) return first;
+
+    const onScreen = knownModalOnScreen();
+    const cleared = await dismissModals({ onlyIfPresent: true, timeout: 6000 });
+    const stuck = cleared.find((r) => !r.ok);
+
+    if (stuck) {
+      // Could not clear it, so a retry would hit the same wall.
+      return Object.assign({}, first, {
+        reason: "blocked-by-overlay",
+        modal: stuck.modal,
+        modalReason: stuck.reason,
+        recovered: false,
+        label,
+      });
+    }
+
+    await wait(600);
+    const second = await run();
+    return Object.assign({}, second, {
+      recoveredFromOverlay: true,
+      overlayWas: onScreen || "unknown overlay",
+    });
   }
 
   const SEL_SIZE_CONTAINER = [
@@ -545,7 +608,9 @@
       let categoryOk = false;
 
       if (listing.categoryPath) {
-        const categoryResult = await fillCategory(listing.categoryPath);
+        const categoryResult = await withOverlayRecovery("category", () =>
+          fillCategory(listing.categoryPath)
+        );
 
         // The picker reports its own selection; trust that over the clicks
         // having landed.
@@ -609,14 +674,18 @@
         showProgress(6, 6, "Filling size, colour...");
 
         try {
-          const sizeResult = await fillSize((listing.size || "").trim());
+          const sizeResult = await withOverlayRecovery("size", () =>
+            fillSize((listing.size || "").trim())
+          );
           if (!sizeResult.ok) misses.push({ label: "size", ...sizeResult });
         } catch (err) {
           misses.push({ label: "size", reason: err?.message || "threw" });
         }
 
         try {
-          const colorResult = await fillColors(listing.colors);
+          const colorResult = await withOverlayRecovery("colour", () =>
+            fillColors(listing.colors)
+          );
           if (!colorResult.ok) misses.push({ label: "colour", ...colorResult });
         } catch (err) {
           misses.push({ label: "colour", reason: err?.message || "threw" });
@@ -654,16 +723,32 @@
         // when a dialog was sitting on top of it sends you to the wrong
         // place entirely.
         const stuckModal = misses.find((m) => String(m.label).startsWith("modal:"));
-        const text = stuckModal
-          ? msg.text +
+        const overlayBlocked = misses.find((m) => m.reason === "blocked-by-overlay");
+
+        let text;
+        if (stuckModal) {
+          text =
+            msg.text +
             ' — the "' +
             stuckModal.modal +
             '" dialog could not be dismissed (' +
             stuckModal.reason +
-            "), so nothing below it could be filled"
-          : categoryOk
-            ? msg.text + " — check by hand: " + misses.map((m) => m.label).join(", ")
-            : msg.text + " — category could not be set, so size and colour were skipped";
+            "), so nothing below it could be filled";
+        } else if (overlayBlocked) {
+          // Cleared once and it came back, or would not clear at all. Say
+          // which dialog rather than blaming the field it was covering.
+          text =
+            msg.text +
+            " — " +
+            (overlayBlocked.label || "a field") +
+            ' was blocked by the "' +
+            (overlayBlocked.modal || "unknown") +
+            '" dialog even after dismissing it';
+        } else if (categoryOk) {
+          text = msg.text + " — check by hand: " + misses.map((m) => m.label).join(", ");
+        } else {
+          text = msg.text + " — category could not be set, so size and colour were skipped";
+        }
         showNotification(text, "error");
       } else {
         showNotification(msg.text, msg.type);
