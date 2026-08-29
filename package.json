@@ -21,6 +21,7 @@
     "ebay:reconcile": "tsx scripts/ebay-reconcile.mts",
     "prices:derive": "tsx scripts/derive-platform-prices.mts",
     "crosslist:generate-map": "tsx scripts/generate-crosslist-map.mts",
+    "depop:verify": "tsx scripts/verify-depop-categories.mts",
     "poshmark:verify": "tsx scripts/verify-poshmark-categories.mts",
     "ebay:shipping": "tsx scripts/ebay-shipping-policies.mts",
     "ebay:apply-shipping": "tsx scripts/ebay-apply-shipping.mts"

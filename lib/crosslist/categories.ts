@@ -473,7 +473,21 @@ const POSHMARK: Tree = {
   },
 }
 
-/** Depop: Category > Subcategory > Type. */
+/**
+ * Depop: Category > Subcategory > Type.
+ *
+ * The LEAF of every path below exists in lib/crosslist/data/depop-tree.json,
+ * captured from the live create page on 2026-08-28; `npm run depop:verify`
+ * re-checks them. The two tiers above the leaf are NOT verified - the branch
+ * walk failed during capture, so there is no record of them and inventing one
+ * would be worse than admitting the gap.
+ *
+ * The table was originally hand-written in British English - Trainers,
+ * Trousers, Joggers, Jumpers - for a form that says Sneakers, Pants,
+ * Sweatpants and Sweaters. Sixteen of thirty paths in use named a row the
+ * picker does not contain, so they could not be selected at all. Take the
+ * names from the capture, not from what Depop sounds like it should say.
+ */
 const DEPOP: Tree = {
   tshirts: {
     men: ['Menswear', 'Tops', 'T-shirts'],
@@ -484,16 +498,21 @@ const DEPOP: Tree = {
   },
   'casual-shirts': {
     men: ['Menswear', 'Tops', 'Shirts'],
-    women: ['Womenswear', 'Tops', 'Shirts & Blouses'],
+    women: ['Womenswear', 'Tops', 'Shirts'],
   },
   'dress-shirts': {
     men: ['Menswear', 'Tops', 'Shirts'],
-    women: ['Womenswear', 'Tops', 'Shirts & Blouses'],
+    // Depop lists Shirts and Blouses separately; a woman's dress shirt is the
+    // blouse row.
+    women: ['Womenswear', 'Tops', 'Blouses'],
   },
-  polos: { men: ['Menswear', 'Tops', 'Polo shirts'], women: ['Womenswear', 'Tops', 'T-shirts'] },
+  polos: { men: ['Menswear', 'Tops', 'Polo shirts'], women: ['Womenswear', 'Tops', 'Polo shirts'] },
   sweaters: {
-    men: ['Menswear', 'Tops', 'Jumpers & Sweaters'],
-    women: ['Womenswear', 'Tops', 'Jumpers & Sweaters'],
+    men: ['Menswear', 'Tops', 'Sweaters'],
+    women: ['Womenswear', 'Tops', 'Sweaters'],
+    boys: ['Menswear', 'Tops', 'Sweaters'],
+    girls: ['Womenswear', 'Tops', 'Sweaters'],
+    'unisex-kids': ['Menswear', 'Tops', 'Sweaters'],
   },
   hoodies: {
     men: ['Menswear', 'Tops', 'Hoodies'],
@@ -510,40 +529,74 @@ const DEPOP: Tree = {
     'unisex-kids': ['Menswear', 'Outerwear', 'Jackets'],
   },
   jeans: { men: ['Menswear', 'Bottoms', 'Jeans'], women: ['Womenswear', 'Bottoms', 'Jeans'] },
-  pants: { men: ['Menswear', 'Bottoms', 'Trousers'], women: ['Womenswear', 'Bottoms', 'Trousers'], boys: ['Menswear', 'Bottoms', 'Trousers'] },
+  pants: {
+    men: ['Menswear', 'Bottoms', 'Pants'],
+    women: ['Womenswear', 'Bottoms', 'Pants'],
+    boys: ['Menswear', 'Bottoms', 'Pants'],
+    girls: ['Womenswear', 'Bottoms', 'Pants'],
+    'unisex-kids': ['Menswear', 'Bottoms', 'Pants'],
+  },
   shorts: { men: ['Menswear', 'Bottoms', 'Shorts'], women: ['Womenswear', 'Bottoms', 'Shorts'] },
-  skirts: { women: ['Womenswear', 'Bottoms', 'Skirts'] },
-  dresses: { women: ['Womenswear', 'Dresses', 'Midi dresses'], girls: ['Womenswear', 'Dresses', 'Midi dresses'] },
+  skirts: { women: ['Womenswear', 'Bottoms', 'Skirts'], girls: ['Womenswear', 'Bottoms', 'Skirts'] },
+  dresses: {
+    // Depop splits dresses by occasion - Casual, Formal, Prom, Summer and a
+    // dozen more. Nothing in our data says which, and the generic "Dresses"
+    // row exists, so use it rather than guessing an occasion.
+    women: ['Womenswear', 'Dresses', 'Dresses'],
+    girls: ['Womenswear', 'Dresses', 'Dresses'],
+  },
   'activewear-tops': { men: ['Menswear', 'Tops', 'T-shirts'], women: ['Womenswear', 'Tops', 'T-shirts'] },
-  'activewear-pants': { men: ['Menswear', 'Bottoms', 'Joggers'], women: ['Womenswear', 'Bottoms', 'Joggers'] },
-  swimwear: { men: ['Menswear', 'Bottoms', 'Swimwear'], women: ['Womenswear', 'Swimwear', 'Bikinis'] },
-  sleepwear: { women: ['Womenswear', 'Other', 'Sleepwear'] },
-  suits: { men: ['Menswear', 'Suits', 'Suit jackets'] },
-  'athletic-shoes': { men: ['Menswear', 'Shoes', 'Trainers'], women: ['Womenswear', 'Shoes', 'Trainers'], 'unisex-kids': ['Menswear', 'Shoes', 'Trainers'], boys: ['Menswear', 'Shoes', 'Trainers'], girls: ['Womenswear', 'Shoes', 'Trainers'] },
-  'casual-shoes': { men: ['Menswear', 'Shoes', 'Trainers'], women: ['Womenswear', 'Shoes', 'Trainers'], boys: ['Menswear', 'Shoes', 'Trainers'], girls: ['Womenswear', 'Shoes', 'Trainers'], 'unisex-kids': ['Menswear', 'Shoes', 'Trainers'] },
-  hats: { men: ['Menswear', 'Accessories', 'Hats'], women: ['Womenswear', 'Accessories', 'Hats'] },
-  bags: { women: ['Womenswear', 'Bags', 'Tote bags'] },
-  // Depop has no kids department - everything sits under Menswear or
-  // Womenswear - so children's coveralls and one-pieces take the same "Other"
-  // leaf adult coveralls already use. Filed under Menswear by the usual
-  // convention for garments with no gendered read.
+  'activewear-pants': {
+    men: ['Menswear', 'Bottoms', 'Sweatpants'],
+    women: ['Womenswear', 'Bottoms', 'Sweatpants'],
+  },
+  swimwear: {
+    men: ['Menswear', 'Bottoms', 'Swim briefs and shorts'],
+    women: ['Womenswear', 'Swimwear', 'Swimsuits'],
+  },
+  sleepwear: {
+    men: ['Menswear', 'Other', 'Pajamas'],
+    women: ['Womenswear', 'Other', 'Pajamas'],
+  },
+  suits: { men: ['Menswear', 'Suits', 'Suits'], women: ['Womenswear', 'Suits', 'Suits'] },
+  'athletic-shoes': {
+    men: ['Menswear', 'Shoes', 'Sneakers'],
+    women: ['Womenswear', 'Shoes', 'Sneakers'],
+    'unisex-kids': ['Menswear', 'Shoes', 'Sneakers'],
+    boys: ['Menswear', 'Shoes', 'Sneakers'],
+    girls: ['Womenswear', 'Shoes', 'Sneakers'],
+  },
+  'casual-shoes': {
+    men: ['Menswear', 'Shoes', 'Sneakers'],
+    women: ['Womenswear', 'Shoes', 'Sneakers'],
+    boys: ['Menswear', 'Shoes', 'Sneakers'],
+    girls: ['Womenswear', 'Shoes', 'Sneakers'],
+    'unisex-kids': ['Menswear', 'Shoes', 'Sneakers'],
+  },
+  hats: { men: ['Menswear', 'Accessories', 'Hats and caps'], women: ['Womenswear', 'Accessories', 'Hats and caps'] },
+  bags: { men: ['Menswear', 'Bags', 'Bags'], women: ['Womenswear', 'Bags', 'Bags'] },
+  // Depop has no kids department, so children's items sit under Menswear or
+  // Womenswear. "Overalls" and "Rompers" are real rows on the form - the
+  // earlier "Other" was a placeholder written before the capture existed.
   coveralls: {
-    men: ['Menswear', 'Other', 'Other'],
-    women: ['Womenswear', 'Other', 'Other'],
-    boys: ['Menswear', 'Other', 'Other'],
-    girls: ['Womenswear', 'Other', 'Other'],
-    'unisex-kids': ['Menswear', 'Other', 'Other'],
-    baby: ['Menswear', 'Other', 'Other'],
+    men: ['Menswear', 'Other', 'Overalls'],
+    women: ['Womenswear', 'Other', 'Overalls'],
+    boys: ['Menswear', 'Other', 'Overalls'],
+    girls: ['Womenswear', 'Other', 'Overalls'],
+    'unisex-kids': ['Menswear', 'Other', 'Overalls'],
+    baby: ['Menswear', 'Other', 'Overalls'],
   },
   onepiece: {
-    men: ['Menswear', 'Other', 'Other'],
-    women: ['Womenswear', 'Other', 'Other'],
-    boys: ['Menswear', 'Other', 'Other'],
-    girls: ['Womenswear', 'Other', 'Other'],
-    'unisex-kids': ['Menswear', 'Other', 'Other'],
-    baby: ['Menswear', 'Other', 'Other'],
+    men: ['Menswear', 'Other', 'Rompers'],
+    women: ['Womenswear', 'Other', 'Rompers'],
+    boys: ['Menswear', 'Other', 'Rompers'],
+    girls: ['Womenswear', 'Other', 'Rompers'],
+    'unisex-kids': ['Menswear', 'Other', 'Rompers'],
+    // Depop has a row for exactly this.
+    baby: ['Menswear', 'Other', 'Onesies and sleepers'],
   },
 }
+
 
 /** Mercari: 4 tiers - Department > Category > Subcategory > Type. */
 const MERCARI: Tree = {

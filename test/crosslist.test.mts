@@ -154,8 +154,13 @@ describe('mapCategory', () => {
   })
 
   test('returns null for a garment a platform has no home for', () => {
-    // Menswear bags exist nowhere in these trees.
-    assert.equal(mapCategory('depop', "Women's Bags & Handbags", 'Men'), null)
+    // Depop lists skirts under womenswear only, so there is nowhere to put a
+    // menswear skirt - and a null is what makes the validator block rather
+    // than the fill picking some adjacent row.
+    assert.equal(
+      mapCategory('depop', "Clothing, Shoes & Accessories:Women:Women's Clothing:Skirts", 'Men'),
+      null,
+    )
   })
 })
 
