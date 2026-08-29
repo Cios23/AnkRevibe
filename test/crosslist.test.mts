@@ -3,6 +3,8 @@ import assert from 'node:assert/strict'
 
 import {
   CATEGORY_DEPTH,
+  inferDepartmentFromTitle,
+  inferGarmentFromTitle,
   mapCategory,
   normaliseDepartment,
   toInternalCategory,
@@ -355,6 +357,119 @@ describe('mapCondition', () => {
  * pin every reachable output to what the form actually offers. A value that
  * is not on the list is not "close enough" - the form rejects it.
  */
+// ------------------------------------------------- title-based rescue
+
+/**
+ * Reading the garment out of the title when the category will not say.
+ *
+ * This decides whether 102 of 402 active items are listable at all, so the
+ * risk is not a miss - it is a confident wrong read putting a coat in the
+ * t-shirt category. Every rule is pinned, including the ones that must NOT
+ * fire.
+ */
+describe('inferGarmentFromTitle', () => {
+  test('reads the garment out of real catalogue titles', () => {
+    assert.equal(inferGarmentFromTitle('Nike Tee T-Shirt White Sox Frank Thomas HOF'), 'tshirts')
+    assert.equal(inferGarmentFromTitle('Missouri Tiger Nike Full Zip Jacket Size Medium'), 'coats-jackets')
+    assert.equal(inferGarmentFromTitle('Vintage Walls Blizzard Pruf Coveralls Boys 8'), 'coveralls')
+    assert.equal(inferGarmentFromTitle('VTG Y2K Toddler Overalls Vitaminkids 18months'), 'coveralls')
+    assert.equal(inferGarmentFromTitle('Chicago Bulls Jordan Jersey XL'), 'tshirts')
+  })
+
+  test('a jacket in fan apparel is a jacket, not a t-shirt', () => {
+    // The coarse rule calls everything under Fan Apparel a t-shirt. If that
+    // beat the title, this jacket would ship at the tee rate and list in the
+    // wrong category.
+    const internal = toInternalCategory(
+      'Sports Mem, Cards & Fan Shop:Fan Apparel & Souvenirs:College-NCAA',
+      null,
+      'Missouri Tiger Nike Full Zip Jacket Size Medium',
+    )
+    assert.equal(internal?.garment, 'coats-jackets')
+    assert.equal(internal?.garmentSource, 'title')
+  })
+
+  test('the coarse rule still catches a title that says nothing', () => {
+    const internal = toInternalCategory(
+      'Sports Mem, Cards & Fan Shop:Fan Apparel & Souvenirs:Baseball-MLB',
+      null,
+      'White Sox 2005 World Series Commemorative',
+    )
+    assert.equal(internal?.garment, 'tshirts')
+    assert.equal(internal?.garmentSource, 'coarse')
+  })
+
+  test('matches whole words only', () => {
+    // Without boundaries "dress" matches "dresser" and "cap" matches "capri".
+    assert.equal(inferGarmentFromTitle('Antique Dresser Drawer Pull'), null)
+    assert.equal(inferGarmentFromTitle('Capri Sun Pouch 12ct'), null)
+    assert.equal(inferGarmentFromTitle('Star Wars Mug'), null)
+    assert.equal(inferGarmentFromTitle('1968 Cadeco All Star Baseball Game'), null)
+  })
+
+  test('a dress shirt is a shirt, not a dress', () => {
+    assert.equal(inferGarmentFromTitle('Ralph Lauren Dress Shirt 16.5'), 'dress-shirts')
+    assert.equal(inferGarmentFromTitle('Floral Midi Dress Size 6'), 'dresses')
+  })
+})
+
+describe('inferDepartmentFromTitle', () => {
+  test('reads kids sizing, which titles carry and the import did not', () => {
+    assert.equal(inferDepartmentFromTitle('Vintage Walls Coveralls Boys 8'), 'boys')
+    assert.equal(inferDepartmentFromTitle('VTG Y2K Toddler Overalls 18months'), 'baby')
+    assert.equal(inferDepartmentFromTitle('Nike Youth Hoodie L'), 'unisex-kids')
+    assert.equal(inferDepartmentFromTitle("Women's Levi's 501"), 'women')
+    assert.equal(inferDepartmentFromTitle('Mens Carhartt Jacket XL'), 'men')
+  })
+
+  test('says nothing when the title says nothing', () => {
+    assert.equal(inferDepartmentFromTitle('Nike Tee White Sox'), null)
+    assert.equal(inferDepartmentFromTitle(null), null)
+  })
+
+  test('a known garment with no department still lands somewhere', () => {
+    // Two-department trees force a side. Listing it as menswear beats not
+    // listing it, and the source records that it was assumed.
+    const internal = toInternalCategory(
+      'Sports Mem, Cards & Fan Shop:Fan Apparel & Souvenirs:Baseball-MLB',
+      null,
+      'Nike Tee T-Shirt White Sox',
+    )
+    assert.equal(internal?.department, 'men')
+    assert.equal(internal?.departmentSource, 'assumed')
+  })
+
+  test('a dress assumed into womenswear, not menswear', () => {
+    const internal = toInternalCategory('Collectibles:Whatever', null, 'Floral Midi Dress')
+    assert.equal(internal?.department, 'women')
+  })
+})
+
+describe('the title fallback does not disturb existing mappings', () => {
+  test('a category that already resolves is untouched by the title', () => {
+    // A misleading title must not override a category that named the garment.
+    const internal = toInternalCategory(
+      "Clothing, Shoes & Accessories:Men:Men's Clothing:Shirts:T-Shirts",
+      'Men',
+      'Heavy Winter Parka Boots',
+    )
+    assert.equal(internal?.garment, 'tshirts')
+    assert.equal(internal?.garmentSource, 'field')
+    assert.equal(internal?.departmentSource, 'field')
+  })
+
+  test('without a title the old behaviour is exact', () => {
+    // lib/ebay/shipping.ts resolves bands through here, and its assignment
+    // has been applied to 360 live listings. Rescuing a category must not
+    // silently re-band them.
+    assert.equal(toInternalCategory('Collectibles:Holiday & Seasonal:Ornaments', null), null)
+    assert.equal(
+      toInternalCategory('Sports Mem, Cards & Fan Shop:Fan Apparel & Souvenirs:College-NCAA', null),
+      null,
+    )
+  })
+})
+
 describe("Depop's fixed vocabularies", () => {
   const ERAS = [
     '1990s', '90s', '1985', '2003', 'Y2K', '2015', '1940s',
@@ -648,12 +763,31 @@ describe('mapListing validation', () => {
   })
 
   test('an unmappable category blocks the listing', () => {
+    // The title has to name no garment either, or the fallback rescues it -
+    // which is the point of the fallback. A mug is genuinely not apparel.
     const result = mapListing('poshmark', item({
+      title: 'Star Wars Mug',
       category: 'Collectibles:Holiday & Seasonal:Ornaments',
       subcategory: null,
     }))
     assert.equal(result.ok, false)
     assert.ok(result.errors.some((e) => e.field === 'category'))
+  })
+
+  test('a garment named only in the title is still listed', () => {
+    // 102 active items sit under categories that describe the subject rather
+    // than the garment - "Sports Mem, Cards & Fan Shop" and the like. Left
+    // alone every one of them is unlistable, though most are ordinary
+    // apparel.
+    const result = mapListing('poshmark', item({
+      title: 'Nike Tee T-Shirt White Sox Frank Thomas HOF Size L',
+      category: 'Sports Mem, Cards & Fan Shop:Fan Apparel & Souvenirs:Baseball-MLB',
+      subcategory: null,
+    }))
+    assert.ok(result.listing.category, 'expected the title to rescue it')
+    assert.deepEqual(result.listing.category!.path, ['Men', 'Shirts', 'Tees - Short Sleeve'])
+    // Flagged as inferred, so a listing filed oddly is traceable.
+    assert.equal(result.listing.category!.source, 'department-fallback')
   })
 
   test('accessories do not require a size', () => {

@@ -49,6 +49,14 @@ export type Department = 'men' | 'women' | 'boys' | 'girls' | 'unisex-kids' | 'b
 export type InternalCategory = {
   department: Department
   garment: GarmentKey
+  /**
+   * Where each half came from. 'field' is the item's own data, 'title' was
+   * read out of the title, 'coarse' is a whole-category guess, and 'assumed'
+   * means a two-department tree forced a side. Only ever anything other than
+   * 'field' when a title is supplied.
+   */
+  garmentSource?: 'field' | 'title' | 'coarse'
+  departmentSource?: 'field' | 'title' | 'assumed'
 }
 
 /**
@@ -120,22 +128,179 @@ const GARMENT_RULES: Array<{ match: RegExp; garment: GarmentKey }> = [
   { match: /coveralls|jumpsuits & rompers/i, garment: 'coveralls' },
   { match: /one-pieces|outfits & sets/i, garment: 'onepiece' },
   { match: /shirts & tops|:tops$/i, garment: 'casual-shirts' },
-  // Fan apparel is unlabelled by garment on eBay; a shirt is the safe read.
+]
+
+/**
+ * Last-resort rules for categories that name no garment at all.
+ *
+ * Tried only AFTER the title, because these are guesses about a whole
+ * department rather than readings of a leaf. "Fan Apparel & Souvenirs" holds
+ * tees, jerseys, hoodies and jackets alike, so calling everything in it a
+ * t-shirt is right more often than not and wrong often enough that a title
+ * saying "Full Zip Jacket" must win.
+ */
+const COARSE_GARMENT_RULES: Array<{ match: RegExp; garment: GarmentKey }> = [
   { match: /fan apparel & souvenirs/i, garment: 'tshirts' },
 ]
 
+/**
+ * Garment from the title, when the eBay category names none.
+ *
+ * 102 of 402 active items sit under categories like "Sports Mem, Cards & Fan
+ * Shop" or "Collectibles" that describe the SUBJECT rather than the garment.
+ * The same technique already rescues shipping bands for that population; the
+ * titles are the only place the garment appears.
+ *
+ * Ordered most specific first, and every rule is anchored on word boundaries:
+ * without them "dress" matches "dresser" and "cap" matches "capri", which is
+ * how a coffee table ends up filed as a dress.
+ */
+const TITLE_GARMENTS: Array<{ match: RegExp; garment: GarmentKey }> = [
+  { match: /\bcoveralls?\b|\boveralls?\b|\bsnowsuit\b|\bjumpsuit\b|\bdungarees\b/i, garment: 'coveralls' },
+  { match: /\bromper\b|\bonesie\b|\bbodysuit\b|\bone.?piece\b/i, garment: 'onepiece' },
+  { match: /\bblazer\b|\bsport coat\b|\bsuit jacket\b/i, garment: 'suits' },
+  { match: /\bhoodie\b|\bhooded\b|\bsweatshirt\b|\bcrewneck\b|\bpullover\b|\bfleece\b/i, garment: 'hoodies' },
+  { match: /\bcardigan\b|\bsweater\b|\bknit\b/i, garment: 'sweaters' },
+  { match: /\bjacket\b|\bcoat\b|\bparka\b|\bpuffer\b|\bwindbreaker\b|\banorak\b|\bvest\b/i, garment: 'coats-jackets' },
+  { match: /\bjeans\b|\bdenim pants\b/i, garment: 'jeans' },
+  { match: /\bpants\b|\btrousers\b|\bjoggers\b|\bsweatpants\b|\bchinos\b|\bslacks\b|\bleggings\b/i, garment: 'pants' },
+  { match: /\bshorts\b/i, garment: 'shorts' },
+  { match: /\bskirt\b/i, garment: 'skirts' },
+  { match: /\bswimsuit\b|\bbikini\b|\btrunks\b|\bswim\b/i, garment: 'swimwear' },
+  { match: /\bpajamas?\b|\bpyjamas?\b|\bsleepwear\b|\bnightgown\b|\brobe\b/i, garment: 'sleepwear' },
+  // Before the generic dress rule, so "dress shirt" is a shirt.
+  { match: /\bdress shirt\b|\boxford\b/i, garment: 'dress-shirts' },
+  { match: /\bdress\b|\bgown\b/i, garment: 'dresses' },
+  { match: /\bpolo\b/i, garment: 'polos' },
+  { match: /\bbutton.?down\b|\bbutton.?up\b|\bflannel\b/i, garment: 'casual-shirts' },
+  // A sports jersey is a shirt, and fan apparel is full of them.
+  { match: /\btee\b|\btees\b|\bt.?shirts?\b|\bjersey\b|\btank top\b/i, garment: 'tshirts' },
+  { match: /\bsneakers?\b|\btrainers?\b|\bcleats?\b/i, garment: 'athletic-shoes' },
+  { match: /\bboots?\b|\bloafers?\b|\bsandals?\b|\bshoes?\b/i, garment: 'casual-shoes' },
+  { match: /\bbeanie\b|\bsnapback\b|\bball cap\b|\bhat\b|\bcap\b/i, garment: 'hats' },
+  { match: /\bbackpack\b|\bcrossbody\b|\bhandbag\b|\btote\b|\bpurse\b|\bbag\b/i, garment: 'bags' },
+  // Deliberately last: "shirt" alone says less than every rule above it.
+  { match: /\bshirt\b/i, garment: 'casual-shirts' },
+]
+
+export function inferGarmentFromTitle(
+  title: string | null | undefined,
+): GarmentKey | null {
+  if (!title) return null
+  for (const rule of TITLE_GARMENTS) {
+    if (rule.match.test(title)) return rule.garment
+  }
+  return null
+}
+
+/**
+ * Department from the title, when the item's own field does not say.
+ *
+ * Kids sizing is the strongest signal in this catalogue - "Boys 8",
+ * "18months", "Youth L" - and it appears in titles far more reliably than in
+ * the subcategory column the import populated.
+ */
+export function inferDepartmentFromTitle(
+  title: string | null | undefined,
+): Department | null {
+  if (!title) return null
+  const text = title.toLowerCase()
+
+  if (/\bbaby\b|\binfant\b|\btoddler\b|\bnewborn\b|\b\d+\s*months?\b|\b\d+mo\b/.test(text)) {
+    return 'baby'
+  }
+  if (/\bboys?\b/.test(text)) return 'boys'
+  if (/\bgirls?\b/.test(text)) return 'girls'
+  if (/\byouth\b|\bkids?\b|\bjuniors?\b|\bchildren'?s?\b/.test(text)) return 'unisex-kids'
+  if (/\bwomens?\b|\bwomen's\b|\bladies\b|\bwmns\b/.test(text)) return 'women'
+  if (/\bmens?\b|\bmen's\b/.test(text)) return 'men'
+  return null
+}
+
+/**
+ * The department a garment implies when nothing else says.
+ *
+ * Only consulted once a garment is known, so this is not a guess about what
+ * the item IS - only about which side of a two-department tree it belongs
+ * on. Dresses and skirts sit in womenswear; everything else follows the
+ * existing convention that unisex adult apparel is listed as menswear.
+ */
+function departmentForGarment(garment: GarmentKey): Department {
+  if (garment === 'dresses' || garment === 'skirts') return 'women'
+  return 'men'
+}
+
+/**
+ * Resolve an eBay category to our own department + garment.
+ *
+ * `title` is optional and changes the outcome only where the category alone
+ * fails. Callers that pass nothing get exactly the behaviour they had before
+ * it existed - which matters, because lib/ebay/shipping.ts resolves bands
+ * through here and its assignment has already been applied to 360 live
+ * listings. Rescuing a category must not silently re-band them.
+ *
+ * With a title, the order is: the leaf's own garment, then the title, then a
+ * whole-category guess. The title beats the coarse rule deliberately - a
+ * "Full Zip Jacket" under Fan Apparel is a jacket, and calling it a t-shirt
+ * because of where eBay filed it would under-declare its shipping too.
+ */
 export function toInternalCategory(
   categoryPath: string | null | undefined,
   subcategory: string | null | undefined,
+  title?: string | null,
 ): InternalCategory | null {
-  const department = normaliseDepartment(subcategory, categoryPath)
-  if (!department) return null
-
   const path = categoryPath ?? ''
+
+  let garment: GarmentKey | null = null
+  let garmentSource: InternalCategory['garmentSource'] = 'field'
   for (const rule of GARMENT_RULES) {
-    if (rule.match.test(path)) return { department, garment: rule.garment }
+    if (rule.match.test(path)) {
+      garment = rule.garment
+      break
+    }
   }
-  return null
+
+  if (!garment && title) {
+    const fromTitle = inferGarmentFromTitle(title)
+    if (fromTitle) {
+      garment = fromTitle
+      garmentSource = 'title'
+    }
+  }
+
+  if (!garment) {
+    for (const rule of COARSE_GARMENT_RULES) {
+      if (rule.match.test(path)) {
+        garment = rule.garment
+        garmentSource = 'coarse'
+        break
+      }
+    }
+  }
+
+  if (!garment) return null
+
+  let department = normaliseDepartment(subcategory, categoryPath)
+  let departmentSource: InternalCategory['departmentSource'] = 'field'
+
+  if (!department && title) {
+    const fromTitle = inferDepartmentFromTitle(title)
+    if (fromTitle) {
+      department = fromTitle
+      departmentSource = 'title'
+    }
+  }
+
+  // Without a title this stays null and the item is unmapped, exactly as
+  // before. With one, a known garment is worth listing on the likelier side
+  // of the tree rather than not at all.
+  if (!department) {
+    if (!title) return null
+    department = departmentForGarment(garment)
+    departmentSource = 'assumed'
+  }
+
+  return { department, garment, garmentSource, departmentSource }
 }
 
 // ---------------------------------------------------------------- platforms
@@ -358,7 +523,26 @@ const DEPOP: Tree = {
   'casual-shoes': { men: ['Menswear', 'Shoes', 'Trainers'], women: ['Womenswear', 'Shoes', 'Trainers'], boys: ['Menswear', 'Shoes', 'Trainers'], girls: ['Womenswear', 'Shoes', 'Trainers'], 'unisex-kids': ['Menswear', 'Shoes', 'Trainers'] },
   hats: { men: ['Menswear', 'Accessories', 'Hats'], women: ['Womenswear', 'Accessories', 'Hats'] },
   bags: { women: ['Womenswear', 'Bags', 'Tote bags'] },
-  coveralls: { men: ['Menswear', 'Other', 'Other'] },
+  // Depop has no kids department - everything sits under Menswear or
+  // Womenswear - so children's coveralls and one-pieces take the same "Other"
+  // leaf adult coveralls already use. Filed under Menswear by the usual
+  // convention for garments with no gendered read.
+  coveralls: {
+    men: ['Menswear', 'Other', 'Other'],
+    women: ['Womenswear', 'Other', 'Other'],
+    boys: ['Menswear', 'Other', 'Other'],
+    girls: ['Womenswear', 'Other', 'Other'],
+    'unisex-kids': ['Menswear', 'Other', 'Other'],
+    baby: ['Menswear', 'Other', 'Other'],
+  },
+  onepiece: {
+    men: ['Menswear', 'Other', 'Other'],
+    women: ['Womenswear', 'Other', 'Other'],
+    boys: ['Menswear', 'Other', 'Other'],
+    girls: ['Womenswear', 'Other', 'Other'],
+    'unisex-kids': ['Menswear', 'Other', 'Other'],
+    baby: ['Menswear', 'Other', 'Other'],
+  },
 }
 
 /** Mercari: 4 tiers - Department > Category > Subcategory > Type. */
@@ -450,8 +634,9 @@ export function mapCategory(
   platform: CrosslistPlatform,
   categoryPath: string | null | undefined,
   subcategory: string | null | undefined,
+  title?: string | null,
 ): PlatformCategory | null {
-  const internal = toInternalCategory(categoryPath, subcategory)
+  const internal = toInternalCategory(categoryPath, subcategory, title)
   if (!internal) return null
 
   const byGarment = TREES[platform][internal.garment]
@@ -460,5 +645,11 @@ export function mapCategory(
   const path = byGarment[internal.department]
   if (!path) return null
 
-  return { path: [...path], source: 'mapped' }
+  // A path reached only because the title or a fallback filled a gap is
+  // still a real path, but worth distinguishing from one the category gave
+  // outright when a listing later turns out to be filed oddly.
+  const inferred =
+    internal.garmentSource !== 'field' || internal.departmentSource !== 'field'
+
+  return { path: [...path], source: inferred ? 'department-fallback' : 'mapped' }
 }

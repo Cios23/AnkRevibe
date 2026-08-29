@@ -78,7 +78,14 @@ export function mapListing(
 
   const department = normaliseDepartment(item.subcategory, item.category)
   const internal = toInternalCategory(item.category, item.subcategory)
-  const category = mapCategory(platform, item.category, item.subcategory)
+  // The title is the fallback when the eBay category names no garment or
+  // no department - common for fan apparel and collectibles.
+  const category = mapCategory(
+    platform,
+    item.category,
+    item.subcategory,
+    item.title,
+  )
 
   // --- category
   if (!category) {
