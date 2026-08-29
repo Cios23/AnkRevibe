@@ -108,12 +108,19 @@ const toItem = (row: Row, platform: CrosslistPlatform): CrosslistItem => ({
 })
 
 /**
- * What the extension needs to fill a form. Deliberately not the whole
- * MappedListing: title and description come live from the popup, so shipping
- * them here as well would double the file for no gain.
+ * What the extension needs to fill a form.
+ *
+ * Title and description are included, and were not at first. That was wrong:
+ * the popup was sending the raw catalogue values, so compileDescription never
+ * ran and 399 of 402 descriptions reached Poshmark still wrapped in the eBay
+ * markup they were imported with - CDATA, <br />, &apos; - visible to buyers.
+ * Emitting the compiled text is what makes the pipeline actually apply.
  */
 type Emitted = {
   ok: boolean
+  /** Compiled per platform: cleaned, and cut to that platform's limit. */
+  title: string
+  description: string
   categoryPath: string[] | null
   categorySource: string | null
   size: string | null
@@ -143,6 +150,8 @@ for (const row of rows) {
 
     const emitted: Emitted = {
       ok: result.ok,
+      title: listing.title,
+      description: listing.description,
       categoryPath: listing.category?.path ?? null,
       categorySource: listing.category?.source ?? null,
       size: listing.size,

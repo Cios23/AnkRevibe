@@ -26,6 +26,7 @@ import {
 } from '../lib/crosslist/attributes'
 import {
   compileDescription,
+  toPlainText,
   estimatePackageSize,
   estimateWeightOz,
   formatWeight,
@@ -362,6 +363,121 @@ describe('mapCondition', () => {
  * pin every reachable output to what the form actually offers. A value that
  * is not on the list is not "close enough" - the form rejects it.
  */
+// --------------------------------------------------- plain-text conversion
+
+/**
+ * Stripping eBay's markup out of a description.
+ *
+ * 399 of 402 active items hold HTML in their description, because that is
+ * what the import stored: 127 in a CDATA wrapper, 94 with <br /> breaks, 185
+ * containing &apos;. eBay renders it. Poshmark and Depop have plain-text
+ * boxes and show it verbatim, so a live listing went out reading
+ * "<![CDATA[<div>Elevate your game-day..." where buyers could see it.
+ */
+describe('toPlainText', () => {
+  test('unwraps the CDATA and the markup around a real description', () => {
+    const raw =
+      "<![CDATA[<div>Under Armour Men&apos;s Freedom USA Tee.<br /><br />" +
+      "The fit is relaxed &amp; classic.</div>]]>"
+    const text = toPlainText(raw)
+    assert.ok(!text.includes('CDATA'), 'CDATA wrapper survived')
+    assert.ok(!/<[a-z/]/i.test(text), 'a tag survived')
+    assert.ok(text.includes("Men's Freedom USA Tee"))
+    assert.ok(text.includes('relaxed & classic'))
+  })
+
+  test('<br /> becomes a real break, not a missing space', () => {
+    // Dropping them outright would run sentences together.
+    assert.equal(toPlainText('one<br />two'), 'one\ntwo')
+    assert.equal(toPlainText('one<br/>two'), 'one\ntwo')
+    assert.equal(toPlainText('one<BR>two'), 'one\ntwo')
+  })
+
+  test('paragraph structure survives as blank lines', () => {
+    const text = toPlainText('<div>first</div><div>second</div>')
+    assert.equal(text, 'first\nsecond')
+  })
+
+  test('decodes the entities the catalogue actually contains', () => {
+    assert.equal(toPlainText('&apos;'), "'")
+    assert.equal(toPlainText('&quot;'), '"')
+    assert.equal(toPlainText('a &amp; b'), 'a & b')
+    assert.equal(toPlainText('90&deg;'), '90°')
+    assert.equal(toPlainText('a&nbsp;b'), 'a b')
+  })
+
+  test('decodes numeric entities in both bases', () => {
+    assert.equal(toPlainText('&#39;'), "'")
+    assert.equal(toPlainText('&#x27;'), "'")
+  })
+
+  test('&amp;apos; stays literal, as HTML says it should', () => {
+    // Decoding &amp; first and rescanning would turn this into an
+    // apostrophe. It is meant to READ as "&apos;".
+    assert.equal(toPlainText('&amp;apos;'), '&apos;')
+  })
+
+  test('leaves an unknown entity alone rather than mangling it', () => {
+    // "&foo;" is likelier to be literal text than a typo'd entity.
+    assert.equal(toPlainText('R&foo;D'), 'R&foo;D')
+  })
+
+  test('drops script and style content entirely', () => {
+    assert.equal(toPlainText('a<script>evil()</script>b'), 'ab')
+    assert.equal(toPlainText('a<style>.x{}</style>b'), 'ab')
+  })
+
+  test('turns list items into bullets', () => {
+    assert.equal(toPlainText('<ul><li>one</li><li>two</li></ul>'), '• one\n• two')
+  })
+
+  test('collapses the whitespace the tags leave behind', () => {
+    assert.equal(toPlainText('<div>  a   b  </div>'), 'a b')
+    assert.equal(toPlainText('a<br /><br /><br /><br />b'), 'a\n\nb')
+  })
+
+  test('plain text passes through untouched', () => {
+    // Most of what this touches is already fine; it must not "improve" it.
+    const plain = 'Vintage Levi 501 jeans, 34x32. Small fray at the hem.'
+    assert.equal(toPlainText(plain), plain)
+  })
+
+  test('handles empty and missing input', () => {
+    assert.equal(toPlainText(null), '')
+    assert.equal(toPlainText(undefined), '')
+    assert.equal(toPlainText(''), '')
+    assert.equal(toPlainText('   '), '')
+  })
+})
+
+describe('descriptions reaching a platform are plain text', () => {
+  const messy =
+    "<![CDATA[<div>A tee.<br />Men&apos;s size L &amp; roomy.</div>]]>"
+
+  for (const platform of ['poshmark', 'depop', 'mercari'] as CrosslistPlatform[]) {
+    test(`${platform} never receives markup`, () => {
+      const result = compileDescription(platform, {
+        description: messy,
+        material: '<b>Cotton</b>',
+        flawNotes: 'Small mark &amp; a loose thread',
+        condition: 'Pre-owned - Good',
+      })
+      assert.ok(!result.text.includes('CDATA'), 'CDATA reached ' + platform)
+      assert.ok(!/<[a-z/]/i.test(result.text), 'a tag reached ' + platform)
+      assert.ok(!/&(amp|apos|quot|lt|gt|nbsp);/i.test(result.text), 'an entity reached ' + platform)
+      assert.ok(result.text.includes("Men's size L & roomy"))
+
+      // Poshmark keeps material and flaws as structured fields, so it gets
+      // the core alone; the other two have the detail appended, and that
+      // appended text is cleaned as well - not only the core.
+      if (platform !== 'poshmark') {
+        assert.ok(result.text.includes('Cotton'), 'material missing')
+        assert.ok(result.text.includes('Small mark & a loose thread'), 'flaws missing')
+      }
+    })
+  }
+})
+
 // ------------------------------------------------- title-based rescue
 
 /**

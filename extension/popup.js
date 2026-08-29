@@ -220,8 +220,12 @@
               platform,
               listing: {
                 inventoryId: item.id,
-                title: item.title,
-                description: item.description,
+                // Compiled by lib/crosslist: cleaned of the eBay markup the
+                // catalogue stores, and already cut to this platform's limit.
+                // The raw values are the fallback for an item the generated
+                // map predates.
+                title: mapped ? mapped.title : item.title,
+                description: mapped ? mapped.description : item.description,
                 brand: item.brand,
                 price,
                 // Carried so the listing payload is self-describing. The
