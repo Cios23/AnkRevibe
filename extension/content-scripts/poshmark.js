@@ -26,6 +26,130 @@
   const PLATFORM = "poshmark";
   const MAX_PHOTOS = 8;
 
+  /**
+   * Modals Poshmark raises after the photos upload, in the order they appear.
+   *
+   * Both sit on top of the form and swallow clicks meant for the fields
+   * underneath. That is not a cosmetic problem: a click intercepted by an
+   * overlay does nothing and reports nothing, so the category picker looks
+   * like a dropdown that will not open - which is exactly how this presented,
+   * and why it read as a category bug for three rounds.
+   *
+   * Matched by their visible text rather than by a CSS class. The class names
+   * here are unconfirmed and every guess at one in this codebase has been
+   * wrong; the button labels are what a person actually reads and clicks, and
+   * they are what the screenshots show.
+   */
+  const MODALS = [
+    { name: "covershot", title: /select a covershot/i, button: /^apply$/i },
+    { name: "listing price", title: /^listing price$/i, button: /^done$/i },
+  ];
+
+  /** How long to wait for a modal that may still be rendering. */
+  const MODAL_TIMEOUT = 15000;
+
+  const normText = (el) => String(el?.textContent || "").replace(/\s+/g, " ").trim();
+
+  function elementIsVisible(el) {
+    if (!el || !el.isConnected) return false;
+    const rect = el.getBoundingClientRect();
+    if (rect.width === 0 && rect.height === 0) return false;
+    const style = window.getComputedStyle(el);
+    return style.visibility !== "hidden" && style.display !== "none";
+  }
+
+  /**
+   * Visible elements whose own text matches - "own" meaning no child carries
+   * the identical text, so this returns the label itself rather than every
+   * wrapper around it.
+   */
+  function visibleLeavesMatching(pattern, root) {
+    const out = [];
+    for (const el of (root || document).querySelectorAll("*")) {
+      if (!elementIsVisible(el)) continue;
+      const text = normText(el);
+      if (!text || text.length > 60) continue;
+      if (!pattern.test(text)) continue;
+      if (Array.from(el.children).some((c) => normText(c) === text)) continue;
+      out.push(el);
+    }
+    return out;
+  }
+
+  /**
+   * The dismiss button belonging to a modal with this title.
+   *
+   * Walks up from the title to the first ancestor that also contains the
+   * button, which scopes the search to that modal without needing to know
+   * what the modal element is called. A bare document-wide search for "Done"
+   * could find a button belonging to something else entirely.
+   */
+  function findModalButton(titlePattern, buttonPattern) {
+    for (const title of visibleLeavesMatching(titlePattern)) {
+      let node = title.parentElement;
+      for (let depth = 0; node && depth < 8; depth++, node = node.parentElement) {
+        const button = visibleLeavesMatching(buttonPattern, node)[0];
+        if (button) return { title, button, depth };
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Clear the modals blocking the form.
+   *
+   * Returns what happened for every modal, including ones that never showed -
+   * absence is the normal case for a listing with no photos, and must not
+   * read as a failure. A modal that IS present and will not dismiss is
+   * reported under its own name so it is never mistaken for the category
+   * failure it would otherwise cause.
+   */
+  async function dismissModals() {
+    const results = [];
+
+    for (const modal of MODALS) {
+      const deadline = Date.now() + MODAL_TIMEOUT;
+      let found = null;
+
+      // It may still be rendering, or waiting on the upload behind it.
+      while (Date.now() < deadline) {
+        found = findModalButton(modal.title, modal.button);
+        if (found) break;
+        // Nothing on screen with that title: it either has not appeared yet,
+        // or this listing never triggers it.
+        if (!visibleLeavesMatching(modal.title).length) await wait(400);
+        else await wait(200);
+      }
+
+      if (!found) {
+        const titleOnScreen = visibleLeavesMatching(modal.title).length > 0;
+        results.push({
+          modal: modal.name,
+          ok: !titleOnScreen,
+          reason: titleOnScreen ? "button-not-found" : "never-appeared",
+          waitedMs: MODAL_TIMEOUT,
+          button: String(modal.button),
+        });
+        continue;
+      }
+
+      found.button.click();
+      await wait(900);
+
+      // Confirm it actually went, rather than assuming the click landed.
+      const stillThere = visibleLeavesMatching(modal.title).length > 0;
+      results.push({
+        modal: modal.name,
+        ok: !stillThere,
+        reason: stillThere ? "still-open-after-click" : "dismissed",
+        clicked: normText(found.button),
+      });
+    }
+
+    return results;
+  }
+
+
   let fillStarted = false;
   /** Survives clearPending() so the post-submit URL capture can still report. */
   let crosspostMeta = null;
@@ -371,6 +495,31 @@
       showProgress(2, 6, "Uploading photos...");
       const photos = await attachPhotos(listing.photos || [], MAX_PHOTOS);
 
+      // Before ANY field is touched. Both modals overlay the form and
+      // intercept clicks, so a field filled underneath one is not filled at
+      // all - and says nothing about it.
+      const misses = [];
+      showProgress(3, 6, "Clearing dialogs...");
+      const modalResults = await dismissModals();
+      for (const result of modalResults) {
+        if (result.ok) continue;
+        misses.push({ label: "modal:" + result.modal, ...result });
+      }
+
+      const blockingModal = modalResults.find((r) => !r.ok);
+      if (blockingModal) {
+        // Named on its own terms. Everything after this will fail, and
+        // letting it surface as "category could not be set" is what sent the
+        // last three rounds looking in the wrong place.
+        chrome.storage.local.set({
+          poshmark_modal_last_failure: {
+            at: new Date().toISOString(),
+            inventoryId: listing.inventoryId || null,
+            results: modalResults,
+          },
+        });
+      }
+
       showProgress(3, 6, "Filling title...");
       const titleInput = await findElement(SEL_TITLE, 8000);
       if (titleInput) {
@@ -393,7 +542,6 @@
       // until a category is set, and clicking them early shows "pick a
       // category first". Firing them in the same pass fills nothing.
       showProgress(5, 6, "Filling category...");
-      const misses = [];
       let categoryOk = false;
 
       if (listing.categoryPath) {
@@ -501,11 +649,21 @@
 
       const msg = photoMessage("Poshmark", photos.attempted, photos.succeeded);
       if (misses.length) {
-        // When the category failed, say THAT rather than listing the three
-        // fields it took down with it.
-        const text = categoryOk
-          ? msg.text + " — check by hand: " + misses.map((m) => m.label).join(", ")
-          : msg.text + " — category could not be set, so size and colour were skipped";
+        // Report the first cause, not its consequences. A blocking modal
+        // makes every later field fail; saying "category could not be set"
+        // when a dialog was sitting on top of it sends you to the wrong
+        // place entirely.
+        const stuckModal = misses.find((m) => String(m.label).startsWith("modal:"));
+        const text = stuckModal
+          ? msg.text +
+            ' — the "' +
+            stuckModal.modal +
+            '" dialog could not be dismissed (' +
+            stuckModal.reason +
+            "), so nothing below it could be filled"
+          : categoryOk
+            ? msg.text + " — check by hand: " + misses.map((m) => m.label).join(", ")
+            : msg.text + " — category could not be set, so size and colour were skipped";
         showNotification(text, "error");
       } else {
         showNotification(msg.text, msg.type);

@@ -245,6 +245,91 @@ describe('finding the element that actually opens a picker', () => {
   })
 })
 
+describe('a covered trigger is reported, not silently clicked', () => {
+  /**
+   * Poshmark raises two modals after the photos upload - "Select a Covershot"
+   * and "Listing Price" - and both sit on top of the form. A click meant for
+   * the category picker lands on the overlay instead: nothing opens, nothing
+   * errors, and the driver polls for rows that were never going to appear.
+   *
+   * That is the failure this pins. An overlaid control and a control with no
+   * options look identical unless something asks the browser where the click
+   * would actually go.
+   */
+  let coveredBy: (el: unknown) => { tag: string; text: string } | null
+
+  const rect = (x: number, y: number, w = 100, h = 40) => ({
+    left: x,
+    top: y,
+    width: w,
+    height: h,
+  })
+
+  const node = (tag: string, box: ReturnType<typeof rect>, opts: any = {}) => ({
+    tagName: tag,
+    className: opts.className ?? '',
+    textContent: opts.text ?? '',
+    isConnected: true,
+    getBoundingClientRect: () => box,
+    contains(other: any) {
+      return other === this || (opts.children ?? []).includes(other)
+    },
+  })
+
+  before(() => {
+    ;(globalThis as any).window = {
+      innerWidth: 1280,
+      innerHeight: 800,
+      getComputedStyle: () => ({ visibility: 'visible', display: 'block' }),
+    }
+    coveredBy = (globalThis as any).AnkDropdown.coveredBy
+  })
+
+  test('an uncovered trigger reports nothing', () => {
+    const trigger = node('DIV', rect(100, 100))
+    ;(globalThis as any).document = { elementFromPoint: () => trigger }
+    assert.equal(coveredBy(trigger), null)
+  })
+
+  test('a child of the trigger under the cursor is not coverage', () => {
+    // The centre of a control usually lands on its own label.
+    const label = node('SPAN', rect(100, 100))
+    const trigger = node('DIV', rect(100, 100), { children: [label] })
+    ;(globalThis as any).document = { elementFromPoint: () => label }
+    assert.equal(coveredBy(trigger), null)
+  })
+
+  test('a modal on top IS reported, with what it is', () => {
+    const trigger = node('DIV', rect(100, 100))
+    const modal = node('DIV', rect(0, 0, 1280, 800), {
+      className: 'modal__content',
+      text: 'Select a Covershot',
+    })
+    ;(globalThis as any).document = { elementFromPoint: () => modal }
+
+    const covering = coveredBy(trigger)
+    assert.ok(covering, 'the overlay went undetected')
+    assert.equal(covering!.tag, 'DIV')
+    // Naming what is on top is the whole point: "blocked" without saying by
+    // what sends you looking at the dropdown again.
+    assert.match(covering!.text, /covershot/i)
+  })
+
+  test('an off-screen trigger is not called covered', () => {
+    // elementFromPoint cannot answer outside the viewport, and guessing
+    // "covered" there would turn a scrolled-away field into a false alarm.
+    const trigger = node('DIV', rect(-500, -500))
+    ;(globalThis as any).document = { elementFromPoint: () => null }
+    assert.equal(coveredBy(trigger), null)
+  })
+
+  test('no elementFromPoint means no opinion', () => {
+    const trigger = node('DIV', rect(100, 100))
+    ;(globalThis as any).document = {}
+    assert.equal(coveredBy(trigger), null)
+  })
+})
+
 describe('the dropdown driver polls rather than reading once', () => {
   test('exposes waitForRows', () => {
     // The live category fill reported "no-rows" against a picker that works

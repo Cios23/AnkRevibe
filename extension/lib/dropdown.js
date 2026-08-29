@@ -83,6 +83,41 @@
   ];
 
   /**
+   * What is sitting on top of `el`, if anything.
+   *
+   * Asks the browser what it would actually deliver a click to at the
+   * element's centre. If that is not the element or something within it, a
+   * click here goes somewhere else - which is silent: the click lands on the
+   * overlay, nothing opens, and the picker looks broken rather than covered.
+   * Poshmark raises two modals after a photo upload that do exactly this.
+   *
+   * Returns null when the element is genuinely clickable.
+   */
+  function coveredBy(el) {
+    if (!el || typeof document.elementFromPoint !== "function") return null;
+
+    const rect = el.getBoundingClientRect();
+    if (!rect.width && !rect.height) return null;
+
+    const x = rect.left + rect.width / 2;
+    const y = rect.top + rect.height / 2;
+    if (x < 0 || y < 0 || x > window.innerWidth || y > window.innerHeight) {
+      // Off-screen, so elementFromPoint cannot answer. Not evidence either way.
+      return null;
+    }
+
+    const hit = document.elementFromPoint(x, y);
+    if (!hit) return null;
+    if (hit === el || el.contains(hit) || hit.contains(el)) return null;
+
+    return {
+      tag: hit.tagName,
+      className: String(hit.className || "").slice(0, 120),
+      text: cleanText(hit).slice(0, 120),
+    };
+  }
+
+  /**
    * The element to click to open `container`'s picker.
    *
    * Prefers a visible match, accepts an invisible one over giving up, and
@@ -333,6 +368,21 @@
     const found = findTrigger(container);
     const trigger = found.el;
 
+    // A covered trigger cannot be clicked, and clicking it anyway produces a
+    // silent no-op that is indistinguishable from an empty dropdown. Say so
+    // instead of spending eight seconds polling for rows that were never
+    // going to appear.
+    const covering = coveredBy(trigger);
+    if (covering) {
+      return {
+        ok: false,
+        reason: "blocked-by-overlay",
+        coveredBy: covering,
+        trigger: { tag: trigger.tagName, foundBy: found.how },
+        trace: [],
+      };
+    }
+
     // mousedown as well as click: some pickers open on mousedown and ignore
     // a bare click. Sending both costs nothing and covers either.
     trigger.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
@@ -409,6 +459,7 @@
   }
 
   globalThis.AnkDropdown = {
+    coveredBy,
     findTrigger,
     waitForRows,
     ROW_SELECTOR,
